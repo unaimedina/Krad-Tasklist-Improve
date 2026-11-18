@@ -1,6 +1,6 @@
 // src/main.ts
 import { execFile as execFile2 } from "node:child_process";
-import { readFileSync as readFileSync2, writeFileSync as writeFileSync2 } from "node:fs";
+import { readFileSync as readFileSync2, watch } from "node:fs";
 import { basename as basename3, dirname, relative as relative2, resolve as resolve2, sep } from "node:path";
 import { promisify as promisify2 } from "node:util";
 
@@ -754,6 +754,11 @@ function taskPrompt(task, planPath, style) {
     `Execute the implementation plan in ${planPath}. Read it fully first, follow its steps in order, run every verification command, and honour its STOP conditions. When finished, set the Status cell of row ${task.id} in plans/README.md to DONE, or to BLOCKED (one-line reason) if you stopped. Change no other row.`
   );
 }
+function editPlanPrompt(planPath, instruction) {
+  return safeLine(
+    `Edit the implementation plan in ${planPath}. The change: ${instruction} Read the plan fully first. Change only what the request needs and keep the plan's format: the '# Plan NNN: title' heading, the ## Status section and the numbered steps. Do not carry out the plan and do not change code. If the change touches the title, priority, effort or dependencies, update the plan's row in plans/README.md to match, leaving its Status cell and every other row alone.`
+  );
+}
 function improvePrompt(args) {
   return safeLine(`/improve ${args.trim()}`);
 }
@@ -1009,12 +1014,7 @@ var ACTIONS = {
   edit: "edit",
   // open the plan file in Krad's editor
   quickEdit: "quick-edit",
-  // show the in-tab Markdown editor form
-  saveEdit: "save-edit",
-  // Save button (or submit) of the quick editor
-  editText: "edit-text",
-  // input events of the quick editor's multiline input
-  cancelEdit: "cancel-edit",
+  // edit the plan with a prompt: an agent changes the Markdown
   setStatus: "set-status",
   // select change on the detail pane
   filter: "filter",
@@ -1385,8 +1385,7 @@ function detailTop(state, task) {
     ui.button("detail-run", ACTIONS.run, {
       label: starting ? "Starting\u2026" : "Run",
       icon: starting ? "loading" : "play",
-      // While the quick editor is open, Save is the screen's one accent.
-      variant: state.editing ? "secondary" : "primary",
+      variant: "primary",
       enabled: starting ? "no" : "yes"
     })
   ];
@@ -1407,7 +1406,7 @@ function detailTop(state, task) {
         "detail-editors",
         [
           iconButton("detail-edit", ACTIONS.edit, "pencil", "Edit in editor"),
-          iconButton("detail-quick-edit", ACTIONS.quickEdit, "note", "Quick edit")
+          iconButton("detail-quick-edit", ACTIONS.quickEdit, "magic", "Edit with a prompt")
         ],
         { gap: "xs" }
       )
@@ -1458,41 +1457,9 @@ function detailTop(state, task) {
   }
   return stack(KEYS.detailTop, children);
 }
-function quickEditor(state) {
-  const task = selectedTask(state);
-  const path = task ? relativePath(state.set.root, task.file) : "";
-  const bar = hrow(
-    "plan-edit-bar",
-    [
-      ui.text("plan-edit-label", `Editing ${path}`, { size: "xs", color: "text_muted", wrap: "no_wrap" }),
-      hrow(
-        "plan-edit-buttons",
-        [
-          ui.button("detail-cancel-edit", ACTIONS.cancelEdit, { label: "Cancel", variant: "ghost" }),
-          ui.button("detail-save-edit", ACTIONS.saveEdit, { label: "Save", icon: "check", variant: "primary" })
-        ],
-        { gap: "xs" }
-      )
-    ],
-    { width: "fill" },
-    "between"
-  );
-  const input = ui.input("plan-input", ACTIONS.editText, {
-    value: state.planText ?? "",
-    kind: "multiline",
-    placeholder: "The plan, in Markdown"
-  });
-  return stack(
-    KEYS.plan,
-    [bar, { key: "plan-input-scroll", type: "scroll", direction: "column", style: { height: "fill" }, children: [input] }],
-    { height: "fill", gap: "sm" }
-  );
-}
 function planPane(state) {
   let children;
-  if (state.editing) {
-    return quickEditor(state);
-  } else if (state.planText === null) {
+  if (state.planText === null) {
     children = [ui.text("detail-unreadable", "Cannot read the plan file.", { size: "sm", color: "text_muted" })];
   } else {
     children = [ui.markdown("plan-md", planBody(state.planText))];
@@ -1549,8 +1516,7 @@ function viewShape(state) {
     state.session.active,
     state.set.problems.length > 0,
     filteredTasks(state).length > 0,
-    task?.id ?? "",
-    state.editing
+    task?.id ?? ""
   ].join("|");
 }
 
@@ -1581,11 +1547,7 @@ function options(values) {
   };
 }
 function newUi() {
-  return { selected: null, editing: false, draft: null, filter: "all" };
-}
-function closeEditor(ui2) {
-  ui2.editing = false;
-  ui2.draft = null;
+  return { selected: null, filter: "all" };
 }
 var current = DEFAULTS;
 var runs = [];
@@ -1668,7 +1630,6 @@ function viewState(view, root, withPlan = true) {
     set,
     runs: runsOf(root),
     selected: ui2.selected,
-    editing: ui2.editing,
     planText: withPlan && task ? readText2(task.file) : null,
     session: sessionInfo(root),
     filter: ui2.filter,
@@ -1740,9 +1701,9 @@ function refreshOpen(open, context) {
   const task = state.selected === null ? void 0 : state.set.tasks.find((t) => t.id === state.selected);
   if (task !== void 0) {
     patches.push(patch.replace(detailTop(state, task)));
-    if (!state.editing && state.planText !== open.planText) patches.push(patch.replace(planPane(state)));
+    if (state.planText !== open.planText) patches.push(patch.replace(planPane(state)));
   }
-  if (!state.editing) open.planText = state.planText;
+  open.planText = state.planText;
   patchOpen(open, context, patches);
 }
 function refreshRoot(root, context) {
@@ -2184,14 +2145,9 @@ async function taskAction(open, root, action, id, context) {
     case ACTIONS.edit:
       await context.app.openFile({ path: task.file });
       return;
-    case ACTIONS.quickEdit: {
-      const ui2 = uiOf(open.ref.view, root);
-      ui2.selected = id;
-      ui2.editing = true;
-      ui2.draft = null;
-      refreshDetail(open, context);
+    case ACTIONS.quickEdit:
+      await editWithPrompt(root, task, context);
       return;
-    }
   }
 }
 async function onViewEvent(event, ref, context) {
@@ -2203,17 +2159,8 @@ async function onViewEvent(event, ref, context) {
   try {
     if (event.kind === "choose" && event.node === KEYS.tasks) {
       ui2.selected = event.items[0] ?? null;
-      closeEditor(ui2);
       refreshDetail(open, context);
       return;
-    }
-    if (event.kind === "input" && event.action === ACTIONS.editText) {
-      if (ui2.editing) ui2.draft = event.text;
-      return;
-    }
-    if (event.kind === "click" && event.action === ACTIONS.saveEdit || event.kind === "submit" && event.action === ACTIONS.editText) {
-      if (event.kind === "submit") ui2.draft = event.text;
-      return saveEditor(open, root, ui2, context);
     }
     if (event.kind === "click") {
       switch (event.action) {
@@ -2233,9 +2180,6 @@ async function onViewEvent(event, ref, context) {
           return await startAutoRun(root, context);
         case ACTIONS.stop:
           return await stopAutoRun(root, context);
-        case ACTIONS.cancelEdit:
-          closeEditor(ui2);
-          return refreshDetail(open, context);
         case ACTIONS.run:
         case ACTIONS.runWorktree:
         case ACTIONS.variants:
@@ -2276,19 +2220,63 @@ async function onViewEvent(event, ref, context) {
     refreshRoot(root, context);
   }
 }
-function saveEditor(open, root, ui2, context) {
-  if (ui2.selected === null || !ui2.editing) return;
-  const found = findTask(root, ui2.selected);
-  const draft = ui2.draft;
-  closeEditor(ui2);
-  if (!found) {
-    refreshDetail(open, context);
+async function editWithPrompt(root, task, context) {
+  const { app } = context;
+  const planPath = planPathOf(root, task.file);
+  const instruction = await app.input({
+    title: `Edit plan ${task.id} with ${current.harness}`,
+    placeholder: "What should change? e.g. split step 3 in two, add a test for the parser"
+  });
+  if (instruction === null || !instruction.trim()) return;
+  try {
+    await app.openTerminal({
+      title: `edit ${task.id} \xB7 ${current.harness}`,
+      cwd: root,
+      zone: "session",
+      command: harnessCommand(current.harness, editPlanPrompt(planPath, instruction), current.extraArgs)
+    });
+    watchPlans(root, context);
+    app.toast(`Editing plan ${task.id} with ${current.harness}; the plan refreshes as it changes`, "info");
+  } catch (error) {
+    app.toast(`Could not start the agent: ${failure(error)}`, "error");
+  }
+}
+var PLANS_WATCH_MS = 60 * 60 * 1e3;
+var plansWatches = /* @__PURE__ */ new Map();
+function watchPlans(root, context) {
+  const dir = findPlansDir(root);
+  if (dir === null) return;
+  const key = normPath(root);
+  const existing = plansWatches.get(key);
+  if (existing) {
+    existing.expiry.refresh();
     return;
   }
-  if (draft !== null) writeFileSync2(found.task.file, draft, "utf8");
-  refreshDetail(open, context);
-  refreshRoot(root, context);
-  if (draft !== null) context.app.toast(`Saved ${basename3(found.task.file)}`, "success");
+  try {
+    const entry = {
+      watcher: watch(dir, () => {
+        if (entry.debounce) clearTimeout(entry.debounce);
+        entry.debounce = setTimeout(() => {
+          entry.debounce = null;
+          refreshRoot(root, context);
+        }, 300);
+      }),
+      debounce: null,
+      expiry: setTimeout(() => unwatchPlans(key), PLANS_WATCH_MS)
+    };
+    entry.watcher.on("error", () => unwatchPlans(key));
+    plansWatches.set(key, entry);
+  } catch (error) {
+    context.app.log("warn", `cannot watch ${dir}: ${failure(error)}`);
+  }
+}
+function unwatchPlans(key) {
+  const entry = plansWatches.get(key);
+  if (!entry) return;
+  plansWatches.delete(key);
+  if (entry.debounce) clearTimeout(entry.debounce);
+  clearTimeout(entry.expiry);
+  entry.watcher.close();
 }
 async function newTask(root, context, open = null) {
   const title = await context.app.input({
@@ -2300,7 +2288,6 @@ async function newTask(root, context, open = null) {
   if (open !== null) {
     const ui2 = uiOf(open.ref.view, root);
     ui2.selected = basename3(file).slice(0, 3);
-    closeEditor(ui2);
   }
   refreshRoot(root, context);
   await context.app.openFile({ path: file });
@@ -2395,6 +2382,7 @@ createExtension({
   onShutdown() {
     watcher?.stop();
     watcher = null;
+    for (const key of [...plansWatches.keys()]) unwatchPlans(key);
   },
   onSettingsChanged(values, context) {
     const before = current.kradPath;

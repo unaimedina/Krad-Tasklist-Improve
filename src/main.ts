@@ -1,5 +1,6 @@
 import { execFile } from "node:child_process";
-import { readFileSync, writeFileSync } from "node:fs";
+import type { FSWatcher } from "node:fs";
+import { readFileSync, watch } from "node:fs";
 import { basename, dirname, relative, resolve, sep } from "node:path";
 import { promisify } from "node:util";
 import type {
@@ -22,6 +23,7 @@ import {
   createWorktree,
   findKrad,
   harnessCommand,
+  editPlanPrompt,
   improvePrompt,
   isGitRepo,
   taskPrompt,
@@ -101,20 +103,11 @@ function options(values: SettingsValues): Options {
 
 interface ViewUi {
   selected: string | null;
-  editing: boolean;
-  /** The quick editor's text as last typed; null = untouched since it opened. */
-  draft: string | null;
   filter: Filter;
 }
 
 function newUi(): ViewUi {
-  return { selected: null, editing: false, draft: null, filter: "all" };
-}
-
-/** Closes the quick editor of a view and forgets what was typed. */
-function closeEditor(ui: ViewUi): void {
-  ui.editing = false;
-  ui.draft = null;
+  return { selected: null, filter: "all" };
 }
 
 interface Session {
@@ -245,7 +238,6 @@ function viewState(view: string, root: string, withPlan = true): TabState {
     set,
     runs: runsOf(root),
     selected: ui.selected,
-    editing: ui.editing,
     planText: withPlan && task ? readText(task.file) : null,
     session: sessionInfo(root),
     filter: ui.filter,
@@ -336,9 +328,9 @@ function refreshOpen(open: OpenView, context: Context): void {
   const task = state.selected === null ? undefined : state.set.tasks.find((t) => t.id === state.selected);
   if (task !== undefined) {
     patches.push(patch.replace(detailTop(state, task)));
-    if (!state.editing && state.planText !== open.planText) patches.push(patch.replace(planPane(state)));
+    if (state.planText !== open.planText) patches.push(patch.replace(planPane(state)));
   }
-  if (!state.editing) open.planText = state.planText;
+  open.planText = state.planText;
   patchOpen(open, context, patches);
 }
 
@@ -845,14 +837,9 @@ async function taskAction(open: OpenView, root: string, action: string, id: stri
     case ACTIONS.edit:
       await context.app.openFile({ path: task.file });
       return;
-    case ACTIONS.quickEdit: {
-      const ui = uiOf(open.ref.view, root);
-      ui.selected = id;
-      ui.editing = true;
-      ui.draft = null;
-      refreshDetail(open, context);
+    case ACTIONS.quickEdit:
+      await editWithPrompt(root, task, context);
       return;
-    }
   }
 }
 
@@ -865,21 +852,8 @@ async function onViewEvent(event: ViewEvent, ref: ViewRef, context: Context): Pr
   try {
     if (event.kind === "choose" && event.node === KEYS.tasks) {
       ui.selected = event.items[0] ?? null;
-      closeEditor(ui);
       refreshDetail(open, context);
       return;
-    }
-    if (event.kind === "input" && event.action === ACTIONS.editText) {
-      // Keep what is typed; nothing is sent back, so the input keeps its caret.
-      if (ui.editing) ui.draft = event.text;
-      return;
-    }
-    if (
-      (event.kind === "click" && event.action === ACTIONS.saveEdit) ||
-      (event.kind === "submit" && event.action === ACTIONS.editText)
-    ) {
-      if (event.kind === "submit") ui.draft = event.text;
-      return saveEditor(open, root, ui, context);
     }
     if (event.kind === "click") {
       switch (event.action) {
@@ -899,9 +873,6 @@ async function onViewEvent(event: ViewEvent, ref: ViewRef, context: Context): Pr
           return await startAutoRun(root, context);
         case ACTIONS.stop:
           return await stopAutoRun(root, context);
-        case ACTIONS.cancelEdit:
-          closeEditor(ui);
-          return refreshDetail(open, context);
         case ACTIONS.run:
         case ACTIONS.runWorktree:
         case ACTIONS.variants:
@@ -943,21 +914,77 @@ async function onViewEvent(event: ViewEvent, ref: ViewRef, context: Context): Pr
   }
 }
 
-/** Save in the quick editor: writes what was typed (if anything) and shows the plan again. */
-function saveEditor(open: OpenView, root: string, ui: ViewUi, context: Context): void {
-  if (ui.selected === null || !ui.editing) return;
-  const found = findTask(root, ui.selected);
-  const draft = ui.draft;
-  closeEditor(ui);
-  if (!found) {
-    refreshDetail(open, context);
+/**
+ * "Edit with a prompt": asks what should change in a plan, then opens the configured agent in a
+ * session terminal with a prompt to make that change to the plan file only. The views follow the
+ * agent's writes through a watch on the plans folder.
+ */
+async function editWithPrompt(root: string, task: Task, context: Context): Promise<void> {
+  const { app } = context;
+  const planPath = planPathOf(root, task.file);
+  const instruction = await app.input({
+    title: `Edit plan ${task.id} with ${current.harness}`,
+    placeholder: "What should change? e.g. split step 3 in two, add a test for the parser",
+  });
+  if (instruction === null || !instruction.trim()) return;
+  try {
+    await app.openTerminal({
+      title: `edit ${task.id} · ${current.harness}`,
+      cwd: root,
+      zone: "session",
+      command: harnessCommand(current.harness, editPlanPrompt(planPath, instruction), current.extraArgs),
+    });
+    watchPlans(root, context);
+    app.toast(`Editing plan ${task.id} with ${current.harness}; the plan refreshes as it changes`, "info");
+  } catch (error) {
+    app.toast(`Could not start the agent: ${failure(error)}`, "error");
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Plans folder watch: an agent editing a plan writes outside Krad's editor (no file_saved)
+// ---------------------------------------------------------------------------
+
+/** How long a plans folder is watched after the last agent was started on it. */
+const PLANS_WATCH_MS = 60 * 60 * 1000;
+const plansWatches = new Map<string, { watcher: FSWatcher; debounce: NodeJS.Timeout | null; expiry: NodeJS.Timeout }>();
+
+/** Refreshes the group's views (debounced) whenever a file in its plans folder changes, for an hour. */
+function watchPlans(root: string, context: Context): void {
+  const dir = findPlansDir(root);
+  if (dir === null) return;
+  const key = normPath(root);
+  const existing = plansWatches.get(key);
+  if (existing) {
+    existing.expiry.refresh();
     return;
   }
-  if (draft !== null) writeFileSync(found.task.file, draft, "utf8");
-  // This view shows the plan again; every view of the group shows the new text and title.
-  refreshDetail(open, context);
-  refreshRoot(root, context);
-  if (draft !== null) context.app.toast(`Saved ${basename(found.task.file)}`, "success");
+  try {
+    const entry = {
+      watcher: watch(dir, () => {
+        if (entry.debounce) clearTimeout(entry.debounce);
+        entry.debounce = setTimeout(() => {
+          entry.debounce = null;
+          refreshRoot(root, context);
+        }, 300);
+      }),
+      debounce: null as NodeJS.Timeout | null,
+      expiry: setTimeout(() => unwatchPlans(key), PLANS_WATCH_MS),
+    };
+    entry.watcher.on("error", () => unwatchPlans(key));
+    plansWatches.set(key, entry);
+  } catch (error) {
+    context.app.log("warn", `cannot watch ${dir}: ${failure(error)}`);
+  }
+}
+
+function unwatchPlans(key: string): void {
+  const entry = plansWatches.get(key);
+  if (!entry) return;
+  plansWatches.delete(key);
+  if (entry.debounce) clearTimeout(entry.debounce);
+  clearTimeout(entry.expiry);
+  entry.watcher.close();
 }
 
 /** Writes an empty plan; selects it in the view it was asked from, if any. */
@@ -971,7 +998,6 @@ async function newTask(root: string, context: Context, open: OpenView | null = n
   if (open !== null) {
     const ui = uiOf(open.ref.view, root);
     ui.selected = basename(file).slice(0, 3);
-    closeEditor(ui);
   }
   refreshRoot(root, context);
   await context.app.openFile({ path: file });
@@ -1096,6 +1122,7 @@ createExtension({
   onShutdown() {
     watcher?.stop();
     watcher = null;
+    for (const key of [...plansWatches.keys()]) unwatchPlans(key);
   },
 
   onSettingsChanged(values, context) {

@@ -12,6 +12,7 @@ import {
   listAgents,
   parseWatchLine,
   safeLine,
+  editPlanPrompt,
   taskPrompt,
   variantsCommand,
   worktreeFor,
@@ -184,4 +185,13 @@ test("AgentWatcher reports working then done", async (t) => {
     [7, "working", true],
     [7, "done", false],
   ]);
+});
+
+test("editPlanPrompt asks for one change to one plan file, on one safe line", () => {
+  const prompt = editPlanPrompt("plans/005-wire.md", 'Split step 3 in two\nand add a "test" & more');
+  assert.ok(!/[\r\n"&|<>%^]/.test(prompt), prompt);
+  assert.match(prompt, /^Edit the implementation plan in plans\/005-wire\.md\. The change: Split step 3 in two and add a test more /);
+  assert.match(prompt, /'# Plan NNN: title' heading/);
+  assert.match(prompt, /Do not carry out the plan and do not change code\./);
+  assert.match(prompt, /leaving its Status cell and every other row alone\.$/);
 });

@@ -10,10 +10,7 @@ export const ACTIONS = {
   runWorktree: "run-worktree", // run the task in a new git worktree
   variants: "variants",        // compare agents on this task with Krad variants
   edit: "edit",                // open the plan file in Krad's editor
-  quickEdit: "quick-edit",     // show the in-tab Markdown editor form
-  saveEdit: "save-edit",       // Save button (or submit) of the quick editor
-  editText: "edit-text",       // input events of the quick editor's multiline input
-  cancelEdit: "cancel-edit",
+  quickEdit: "quick-edit",     // edit the plan with a prompt: an agent changes the Markdown
   setStatus: "set-status",     // select change on the detail pane
   filter: "filter",            // select change of the task list filter
   newTask: "new-task",
@@ -67,7 +64,6 @@ export interface TabState {
   set: PlanSet;
   runs: RunRecord[];          // runs of this root, latest per task first
   selected: string | null;    // task id
-  editing: boolean;           // quick editor open for the selected task
   planText: string | null;    // contents of the selected plan file
   session: SessionInfo;
   filter: Filter;             // task list filter of the view
@@ -528,8 +524,7 @@ export function detailTop(state: TabState, task: Task): Node {
         ui.button("detail-run", ACTIONS.run, {
           label: starting ? "Starting…" : "Run",
           icon: starting ? "loading" : "play",
-          // While the quick editor is open, Save is the screen's one accent.
-          variant: state.editing ? "secondary" : "primary",
+          variant: "primary",
           enabled: starting ? "no" : "yes",
         }),
       ];
@@ -550,7 +545,7 @@ export function detailTop(state: TabState, task: Task): Node {
         "detail-editors",
         [
           iconButton("detail-edit", ACTIONS.edit, "pencil", "Edit in editor"),
-          iconButton("detail-quick-edit", ACTIONS.quickEdit, "note", "Quick edit"),
+          iconButton("detail-quick-edit", ACTIONS.quickEdit, "magic", "Edit with a prompt"),
         ],
         { gap: "xs" },
       ),
@@ -605,49 +600,10 @@ export function detailTop(state: TabState, task: Task): Node {
   return stack(KEYS.detailTop, children);
 }
 
-/**
- * The quick editor: a compact bar (what is edited, Cancel, Save) over a multiline input with the
- * whole plan file. A form field renders as a one-line input in the app, so the editor is a plain
- * multiline input whose text reaches the program through input events (ACTIONS.editText) and is
- * written by Save.
- */
-function quickEditor(state: TabState): Node {
-  const task = selectedTask(state);
-  const path = task ? relativePath(state.set.root, task.file) : "";
-  const bar = hrow(
-    "plan-edit-bar",
-    [
-      ui.text("plan-edit-label", `Editing ${path}`, { size: "xs", color: "text_muted", wrap: "no_wrap" }),
-      hrow(
-        "plan-edit-buttons",
-        [
-          ui.button("detail-cancel-edit", ACTIONS.cancelEdit, { label: "Cancel", variant: "ghost" }),
-          ui.button("detail-save-edit", ACTIONS.saveEdit, { label: "Save", icon: "check", variant: "primary" }),
-        ],
-        { gap: "xs" },
-      ),
-    ],
-    { width: "fill" },
-    "between",
-  );
-  const input = ui.input("plan-input", ACTIONS.editText, {
-    value: state.planText ?? "",
-    kind: "multiline",
-    placeholder: "The plan, in Markdown",
-  });
-  return stack(
-    KEYS.plan,
-    [bar, { key: "plan-input-scroll", type: "scroll", direction: "column", style: { height: "fill" }, children: [input] }],
-    { height: "fill", gap: "sm" },
-  );
-}
-
-/** The plan text (or the quick editor) in a scroll that takes the rest of the pane's height. */
+/** The plan text in a scroll that takes the rest of the pane's height. */
 export function planPane(state: TabState): Node {
   let children: Node[];
-  if (state.editing) {
-    return quickEditor(state);
-  } else if (state.planText === null) {
+  if (state.planText === null) {
     children = [ui.text("detail-unreadable", "Cannot read the plan file.", { size: "sm", color: "text_muted" })];
   } else {
     children = [ui.markdown("plan-md", planBody(state.planText))];
@@ -717,6 +673,5 @@ export function viewShape(state: TabState): string {
     state.set.problems.length > 0,
     filteredTasks(state).length > 0,
     task?.id ?? "",
-    state.editing,
   ].join("|");
 }

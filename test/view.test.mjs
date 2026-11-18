@@ -77,7 +77,6 @@ function makeState(overrides = {}) {
     },
     runs: [run("002", "working")],
     selected: null,
-    editing: false,
     planText: null,
     session: { active: false, done: 0, total: 0, running: 0, message: null },
     filter: "all",
@@ -301,7 +300,9 @@ test("taskDetail shows the plan, the note, and the quick editor", () => {
     assert.equal(button.variant, "ghost");
     assert.ok(button.tooltip && !button.label);
   }
-  assert.deepEqual(editors.children.map((n) => n.icon), ["pencil", "note"]);
+  assert.deepEqual(editors.children.map((n) => n.icon), ["pencil", "magic"]);
+  assert.deepEqual(editors.children.map((n) => n.tooltip), ["Edit in editor", "Edit with a prompt"]);
+  assert.equal(editors.children[1].action, ACTIONS.quickEdit);
   // The status select has a line of its own, next to its label only.
   const statusRow = find(detail, (n) => n.key === "detail-status-row");
   assert.deepEqual(statusRow.children.map((n) => n.type), ["flex", "select"]);
@@ -324,27 +325,8 @@ test("taskDetail shows the plan, the note, and the quick editor", () => {
   assert.ok(find(detail, (n) => n.type === "badge" && n.text === "Priority P1"));
   assert.ok(!find(detail, (n) => n.type === "form"));
 
-  const editing = taskDetail(makeState({ selected: "003", planText: plan, editing: true }));
-  // No form (it renders one line): a multiline input with the whole file, under a compact bar.
-  assert.ok(!find(editing, (n) => n.type === "form"));
-  const editor = find(editing, (n) => n.key === KEYS.plan);
-  assert.equal(editor.align, "stretch");
-  assert.equal(editor.style.height, "fill");
-  const input = find(editor, (n) => n.type === "input");
-  assert.equal(input.action, ACTIONS.editText);
-  assert.equal(input.kind, "multiline");
-  assert.equal(input.value, plan);
-  const bar = find(editor, (n) => n.key === "plan-edit-bar");
-  assert.equal(bar.justify, "between");
-  assert.equal(find(bar, (n) => n.key === "plan-edit-label").text, "Editing plans/003-task-003.md");
-  assert.equal(find(bar, (n) => n.action === ACTIONS.cancelEdit).variant, "ghost");
-  const save = find(bar, (n) => n.action === ACTIONS.saveEdit);
-  assert.equal(save.type, "button");
-  assert.equal(save.variant, "primary");
-  // Save is the one accent while editing: Run steps back.
-  assert.equal(walk(editing).filter((n) => n.variant === "primary").length, 1);
-  assert.equal(find(editing, (n) => n.key === "detail-run").variant, "secondary");
-  assert.ok(!find(editing, (n) => n.type === "markdown"));
+  // No in-tab editor: the plan pane only reads.
+  assert.ok(!find(detail, (n) => n.type === "input"));
 
   // Live run: a spinner instead of Run, worktree disabled, run info shown.
   const running = taskDetail(makeState({ selected: "002", planText: plan }));
@@ -371,7 +353,6 @@ test("viewShape changes only with the structure, not with the data shown", () =>
   assert.equal(viewShape(makeState({ selected: "003", planText: "b" })), base);
   assert.equal(viewShape(makeState({ selected: "003", planText: "a", runs: [] })), base);
   assert.notEqual(viewShape(makeState({ selected: "004", planText: "a" })), base);
-  assert.notEqual(viewShape(makeState({ selected: "003", planText: "a", editing: true })), base);
   assert.notEqual(
     viewShape(makeState({ selected: "003", planText: "a", session: { active: true, done: 0, total: 1, running: 0, message: null } })),
     base,
@@ -462,7 +443,7 @@ test("no row gives width fill to a child that has siblings", () => {
   const variants = [
     {},
     { selected: "002", planText: "# Plan 002: x\n\nbody" },
-    { selected: "003", planText: "# x", editing: true },
+    { selected: "003", planText: "# x" },
     { session: { active: true, done: 0, total: 2, running: 1, message: "m" } },
   ];
   for (const overrides of variants) {
@@ -486,7 +467,7 @@ test("all keys in the views are unique", () => {
   const variants = [
     {},
     { selected: "002", planText: "# x" },
-    { selected: "003", planText: "# x", editing: true },
+    { selected: "003", planText: "# x" },
     { session: { active: true, done: 0, total: 2, running: 1, message: "m" } },
   ];
   for (const overrides of variants) {

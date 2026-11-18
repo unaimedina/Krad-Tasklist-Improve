@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { cpSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { cpSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -18,20 +18,24 @@ const INIT = {
 };
 
 /** Spawn dist/main.js and talk framed JSON-RPC to it. */
-function startProgram(groups = []) {
+function startProgram(groups = [], answers = {}) {
   const child = spawn(process.execPath, ["dist/main.js"], { cwd: root, stdio: ["pipe", "pipe", "inherit"] });
   const decoder = new FrameDecoder();
   const pending = new Map();
   /** Notifications from the program (e.g. view/patch), and waiters for them. */
   const notifications = [];
   const waiters = [];
+  /** Requests from the program to the app, in order. */
+  const appRequests = [];
   const send = (message) => child.stdin.write(encodeFrame({ jsonrpc: "2.0", ...message }));
 
   child.stdout.on("data", (chunk) => {
     for (const message of decoder.push(chunk)) {
       if (message.method && message.id !== undefined) {
         // A request from the program to the app.
-        if (message.method === "settings/get") send({ id: message.id, result: {} });
+        appRequests.push(message);
+        if (message.method in answers) send({ id: message.id, result: answers[message.method] });
+        else if (message.method === "settings/get") send({ id: message.id, result: {} });
         else if (message.method === "workspace/context") send({ id: message.id, result: { groups } });
         else send({ id: message.id, result: {} });
       } else if (message.id !== undefined && pending.has(message.id)) {
@@ -66,7 +70,7 @@ function startProgram(groups = []) {
       waiters.push({ match, resolve: (m) => (clearTimeout(timer), resolve(m)) });
     });
 
-  return { child, request, notify, waitFor };
+  return { child, request, notify, waitFor, appRequests };
 }
 
 test("initialize replies with features", async (t) => {
@@ -345,53 +349,61 @@ test("tasklist_set_status writes the README row and rejects unknown ids", async 
   assert.equal(bad.result?.outcome, "failed", JSON.stringify(bad));
 });
 
-test("the quick editor saves what was typed into the plan file", async (t) => {
+test("Edit with a prompt asks what to change and starts the agent on that plan file only", async (t) => {
   const dir = fixtureRoot();
-  const { child, request, notify, waitFor } = startProgram([{ id: "g", name: "g", root: dir }]);
+  const instruction = "Split step 1 in two";
+  const { child, request, notify, waitFor, appRequests } = startProgram([{ id: "g", name: "g", root: dir }], {
+    "window/input": instruction,
+    "terminal/open": 41,
+  });
   t.after(() => {
     child.kill();
     rmSync(dir, { recursive: true, force: true });
   });
   const ref = { view: "tasklist", instance: dir };
-  const event = (e) => notify("view/event", { ...ref, event: e });
-  const patchWith = (key) => (m) => m.method === "view/patch" && JSON.stringify(m.params.patches).includes(`"key":"${key}"`);
+  const before = readFileSync(join(dir, "plans", "002-b.md"), "utf8");
   await request("initialize", INIT);
   await request("view/render", ref);
-  event({ kind: "choose", node: "tasks", items: ["002"] });
-  event({ kind: "click", action: "quick-edit" });
-  const opened = await waitFor(patchWith("plan-input"));
-  const input = findNode(opened.params.patches[0].node, "plan-input");
-  assert.equal(input.kind, "multiline");
-  assert.equal(input.value, readFileSync(join(dir, "plans", "002-b.md"), "utf8"));
-
-  const text = "# Plan 002: Plan B from file\n\n## Steps\n\n1. Edited in the tab.\n";
-  event({ kind: "input", action: "edit-text", text });
-  event({ kind: "click", action: "save-edit" });
-  const saved = await waitFor((m) => patchWith("plan-md")(m) && JSON.stringify(m.params.patches).includes("Edited in the tab"));
-  assert.equal(readFileSync(join(dir, "plans", "002-b.md"), "utf8"), text);
-  const md = saved.params.patches.map((p) => findNode(p.node, "plan-md")).find(Boolean);
-  assert.equal(md.text, "## Steps\n\n1. Edited in the tab.\n");
+  notify("view/event", { ...ref, event: { kind: "choose", node: "tasks", items: ["002"] } });
+  notify("view/event", { ...ref, event: { kind: "click", action: "quick-edit" } });
+  await waitFor((m) => m.method === "window/toast" && /Editing plan 002/.test(m.params.message));
+  const ask = appRequests.find((m) => m.method === "window/input");
+  assert.equal(ask.params.title, "Edit plan 002 with claude");
+  const open = appRequests.find((m) => m.method === "terminal/open");
+  assert.equal(open.params.cwd, dir);
+  assert.equal(open.params.title, "edit 002 · claude");
+  const command = JSON.stringify(open.params.command);
+  assert.match(command, /Edit the implementation plan in plans\/002-b\.md\. The change: Split step 1 in two/);
+  assert.match(command, /Do not carry out the plan/);
+  // The program itself does not touch the plan; the agent does.
+  assert.equal(readFileSync(join(dir, "plans", "002-b.md"), "utf8"), before);
+  // No in-tab editor any more.
+  const view = await request("view/render", ref);
+  assert.equal(findNode(view.result, "plan-input"), null);
+  assert.ok(findNode(view.result, "plan-md"));
 });
 
-test("Save without typing leaves the plan file as it was", async (t) => {
+test("an agent's write to the plan refreshes the open views", async (t) => {
   const dir = fixtureRoot();
-  const { child, request, notify, waitFor } = startProgram([{ id: "g", name: "g", root: dir }]);
+  const { child, request, notify, waitFor } = startProgram([{ id: "g", name: "g", root: dir }], {
+    "window/input": "Rename step 1",
+    "terminal/open": 42,
+  });
   t.after(() => {
     child.kill();
     rmSync(dir, { recursive: true, force: true });
   });
   const ref = { view: "tasklist", instance: dir };
-  const before = readFileSync(join(dir, "plans", "003-c.md"), "utf8");
   await request("initialize", INIT);
   await request("view/render", ref);
-  notify("view/event", { ...ref, event: { kind: "choose", node: "tasks", items: ["003"] } });
+  notify("view/event", { ...ref, event: { kind: "choose", node: "tasks", items: ["002"] } });
   notify("view/event", { ...ref, event: { kind: "click", action: "quick-edit" } });
-  notify("view/event", { ...ref, event: { kind: "click", action: "save-edit" } });
-  // The editor opens (plan-input), then Save shows the plan again (plan-md after it).
-  await waitFor((m) => m.method === "view/patch" && JSON.stringify(m.params.patches).includes('"key":"plan-input"'));
-  // Events are handled in order: once a render answers, Save has run.
-  const after = await request("view/render", ref);
-  assert.ok(findNode(after.result, "plan-md"), "the plan shows again");
-  assert.equal(findNode(after.result, "plan-input"), null);
-  assert.equal(readFileSync(join(dir, "plans", "003-c.md"), "utf8"), before);
+  await waitFor((m) => m.method === "window/toast" && /Editing plan 002/.test(m.params.message));
+  // Stand in for the agent: write the plan outside Krad's editor.
+  writeFileSync(join(dir, "plans", "002-b.md"), "# Plan 002: Plan B from file\n\n## Steps\n\n1. Renamed by the agent.\n");
+  const message = await waitFor(
+    (m) => m.method === "view/patch" && JSON.stringify(m.params.patches).includes("Renamed by the agent"),
+  );
+  const md = message.params.patches.map((p) => findNode(p.node, "plan-md")).find(Boolean);
+  assert.equal(md.text, "## Steps\n\n1. Renamed by the agent.\n");
 });

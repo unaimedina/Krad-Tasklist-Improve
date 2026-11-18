@@ -14,6 +14,11 @@ function taskPrompt(task, planPath, style) {
     `Execute the implementation plan in ${planPath}. Read it fully first, follow its steps in order, run every verification command, and honour its STOP conditions. When finished, set the Status cell of row ${task.id} in plans/README.md to DONE, or to BLOCKED (one-line reason) if you stopped. Change no other row.`
   );
 }
+function editPlanPrompt(planPath, instruction) {
+  return safeLine(
+    `Edit the implementation plan in ${planPath}. The change: ${instruction} Read the plan fully first. Change only what the request needs and keep the plan's format: the '# Plan NNN: title' heading, the ## Status section and the numbered steps. Do not carry out the plan and do not change code. If the change touches the title, priority, effort or dependencies, update the plan's row in plans/README.md to match, leaving its Status cell and every other row alone.`
+  );
+}
 function improvePrompt(args) {
   return safeLine(`/improve ${args.trim()}`);
 }
@@ -243,6 +248,7 @@ var AgentWatcher = class {
 export {
   AgentWatcher,
   createWorktree,
+  editPlanPrompt,
   findKrad,
   harnessCommand,
   improvePrompt,
