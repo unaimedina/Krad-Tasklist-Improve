@@ -174,37 +174,62 @@ function filteredTasks(state) {
   }
 }
 function metaLine(task) {
-  return [
-    task.id,
-    task.priority,
-    task.effort,
-    task.dependsOn.length > 0 ? `after ${task.dependsOn.join(", ")}` : null
-  ].filter(Boolean).join(" \xB7 ");
+  return [task.priority, task.effort, task.dependsOn.length > 0 ? `after ${task.dependsOn.join(", ")}` : null].filter(Boolean).join(" \xB7 ");
 }
 function statusIcon(key, task, badge) {
   return ui.icon(key, STATUS_ICONS[task.status], TONE_COLORS[badge.tone ?? "neutral"]);
 }
+var TITLE_LINE_CHARS = 42;
+function titleLines(title, max = TITLE_LINE_CHARS) {
+  const words = title.replace(/`/g, "").replace(/\s+/g, " ").trim().split(" ");
+  const take = (limit) => {
+    let line = "";
+    while (words.length > 0) {
+      const next = line ? `${line} ${words[0]}` : words[0];
+      if (next.length > limit) break;
+      line = next;
+      words.shift();
+    }
+    if (line === "" && words.length > 0) {
+      line = words[0].slice(0, limit);
+      words[0] = words[0].slice(limit);
+    }
+    return line;
+  };
+  const first = take(max);
+  let second = take(max);
+  if (words.length > 0) {
+    words.unshift(...second.split(" "));
+    second = `${take(max - 1)}\u2026`;
+  }
+  return [first, second];
+}
 function taskRow(state, task) {
   const badge = statusBadge(task, runOf(state, task.id));
   const id = task.id;
-  const node2 = hrow(
+  const [line1, line2] = titleLines(task.title);
+  const titleStyle = { size: "sm", weight: "medium", color: "text_strong", wrap: "no_wrap" };
+  const node2 = ui.flex(
     id,
     [
-      hrow(
-        `${id}-left`,
+      ui.flex(
+        `${id}-gutter`,
         [
-          statusIcon(`${id}-icon`, task, badge),
-          vstack(`${id}-text`, [
-            ui.text(`${id}-title`, task.title, { size: "sm", weight: "medium", color: "text_strong", wrap: "no_wrap" }),
-            ui.text(`${id}-meta`, metaLine(task), { size: "xs", color: "text_muted", wrap: "no_wrap" })
-          ])
+          ui.text(`${id}-number`, id, { size: "sm", weight: "medium", font: "mono", color: "text_subtle", wrap: "no_wrap" }),
+          statusIcon(`${id}-icon`, task, badge)
         ],
-        { gap: "md" }
+        { direction: "column", align: "center", style: { gap: "xs", width: { fixed: 32 } } }
       ),
-      ui.badge(`${id}-badge`, badge.text, badge.tone)
+      vstack(`${id}-text`, [
+        ui.text(`${id}-title`, line1, titleStyle),
+        ui.text(`${id}-title-2`, line2 || "\xA0", titleStyle),
+        hrow(`${id}-meta-row`, [
+          ui.badge(`${id}-badge`, badge.text, badge.tone),
+          ui.text(`${id}-meta`, metaLine(task), { size: "xs", color: "text_muted", wrap: "no_wrap" })
+        ])
+      ])
     ],
-    { width: "fill", padding: "sm", gap: "md" },
-    "between"
+    { direction: "row", align: "start", style: { width: "fill", padding: "sm", gap: "md" } }
   );
   return { node: node2 };
 }
@@ -318,7 +343,7 @@ function tasksPane(state) {
     {
       direction: "column",
       align: "stretch",
-      style: { ...PANEL, width: { fixed: 380 }, padding: "md", gap: "md" }
+      style: { ...PANEL, width: { fixed: 420 }, padding: "md", gap: "md" }
     }
   );
 }
@@ -521,6 +546,7 @@ export {
   ACTIONS,
   FILTERS,
   KEYS,
+  TITLE_LINE_CHARS,
   filteredTasks,
   header,
   noGroupView,
@@ -532,5 +558,6 @@ export {
   taskRow,
   taskRows,
   tasklistView,
-  tasksPane
+  tasksPane,
+  titleLines
 };

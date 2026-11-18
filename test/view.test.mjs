@@ -5,6 +5,8 @@ import {
   KEYS,
   filteredTasks,
   header,
+  titleLines,
+  TITLE_LINE_CHARS,
   noGroupView,
   planBody,
   statusBadge,
@@ -93,7 +95,7 @@ test("the tab root fills its tab and the tasks pane holds a single-selection lis
   assert.equal(body.style.gap, "lg");
   // Left pane: fixed width, stretched by the body row; right pane grows sideways with height fill.
   const pane = find(view, (n) => n.key === KEYS.tasksPane);
-  assert.deepEqual(pane.style.width, { fixed: 380 });
+  assert.deepEqual(pane.style.width, { fixed: 420 });
   assert.notEqual(pane.style.height, "fill");
   assert.equal(pane.style.padding, "md");
   const detail = find(view, (n) => n.key === KEYS.detail);
@@ -117,7 +119,7 @@ test("taskRows returns one uniform row per task without menus", () => {
   assert.equal(badge.text, "running");
   assert.equal(badge.tone, "info");
   assert.equal(find(byKey["002"].node, (n) => n.key === "002-title").text, "Task 002");
-  assert.equal(find(byKey["002"].node, (n) => n.key === "002-meta").text, "002 · P1 · M · after 001");
+  assert.equal(find(byKey["002"].node, (n) => n.key === "002-meta").text, "P1 · M · after 001");
   assert.equal(find(byKey["001"].node, (n) => n.type === "icon").icon, "check");
   assert.equal(find(byKey["003"].node, (n) => n.type === "icon").color, "error");
   // Uniform shape: every row has the same node types in the same order.
@@ -126,9 +128,12 @@ test("taskRows returns one uniform row per task without menus", () => {
   for (const row of rows) {
     assert.equal(row.menu, undefined);
     // Row body: justify between with the badge last, padding sm; the text column starts at the left.
-    assert.equal(row.node.justify, "between");
+    assert.equal(row.node.align, "start");
     assert.equal(row.node.style.padding, "sm");
-    assert.equal(row.node.children.at(-1).type, "badge");
+    // Numbered gutter first; the badge sits on the meta line, always visible.
+    assert.equal(row.node.children[0].children[0].text, row.node.key);
+    assert.equal(find(row.node, (n) => n.key.endsWith("-meta-row")).children[0].type, "badge");
+    assert.equal(find(row.node, (n) => n.key.endsWith("-title-2")).style.wrap, "no_wrap");
     assert.equal(find(row.node, (n) => n.key.endsWith("-text")).align, "start");
     const keys = walk(row.node).map((n) => n.key);
     assert.equal(new Set(keys).size, keys.length);
@@ -408,4 +413,23 @@ test("all keys in the views are unique", () => {
       assert.equal(new Set(keys).size, keys.length, `duplicate keys: ${keys}`);
     }
   }
+});
+
+test("titleLines fits any title in two equal-height lines", () => {
+  assert.deepEqual(titleLines("Draw the Tasklist tab (`src/view.ts`)"), ["Draw the Tasklist tab (src/view.ts)", ""]);
+  assert.deepEqual(titleLines("Scaffold the \"Tasklist\" Krad ADE extension from the krad-docker skeleton"), [
+    "Scaffold the \"Tasklist\" Krad ADE extension",
+    "from the krad-docker skeleton",
+  ]);
+  const long = titleLines("Wire the tab, agent runs, the auto-run session and agent tools (`src/main.ts`, `src/scheduler.ts`)");
+  assert.equal(long[0], "Wire the tab, agent runs, the auto-run");
+  assert.ok(long[1].endsWith("…"));
+  const words = titleLines("x".repeat(100));
+  assert.equal(words[0].length, TITLE_LINE_CHARS);
+  for (const title of ["a", "a b c ".repeat(40), "y".repeat(200), "  spaced   out  "]) {
+    for (const line of titleLines(title)) assert.ok(line.length <= TITLE_LINE_CHARS, `${title} -> ${line}`);
+  }
+  // A short title still gives a second (blank) line so every row has the same height.
+  const row = taskRows(makeState())[0].node;
+  assert.equal(find(row, (n) => n.key === "001-title-2").text, " ");
 });

@@ -177,12 +177,7 @@ export function filteredTasks(state: TabState): Task[] {
 }
 
 function metaLine(task: Task): string {
-  return [
-    task.id,
-    task.priority,
-    task.effort,
-    task.dependsOn.length > 0 ? `after ${task.dependsOn.join(", ")}` : null,
-  ]
+  return [task.priority, task.effort, task.dependsOn.length > 0 ? `after ${task.dependsOn.join(", ")}` : null]
     .filter(Boolean)
     .join(" · ");
 }
@@ -191,28 +186,70 @@ function statusIcon(key: string, task: Task, badge: Badge): Node {
   return ui.icon(key, STATUS_ICONS[task.status], TONE_COLORS[badge.tone ?? "neutral"]);
 }
 
-/** One row of the tab's task list: key = task id, two uniform lines, the badge at the far right. */
+/** Characters of a list title line that fit the tasks pane at text size sm (measured for ~320px). */
+export const TITLE_LINE_CHARS = 42;
+
+/**
+ * A task title for the list: Markdown code ticks dropped, split at word boundaries into exactly
+ * two lines of at most `max` characters, the second ending in "…" when the title is longer.
+ * Rows of a list must all have the same height, so a short title gets an empty second line.
+ */
+export function titleLines(title: string, max = TITLE_LINE_CHARS): [string, string] {
+  const words = title.replace(/`/g, "").replace(/\s+/g, " ").trim().split(" ");
+  const take = (limit: number): string => {
+    let line = "";
+    while (words.length > 0) {
+      const next = line ? `${line} ${words[0]}` : words[0]!;
+      if (next.length > limit) break;
+      line = next;
+      words.shift();
+    }
+    if (line === "" && words.length > 0) {
+      // One word longer than the line: cut it.
+      line = words[0]!.slice(0, limit);
+      words[0] = words[0]!.slice(limit);
+    }
+    return line;
+  };
+  const first = take(max);
+  let second = take(max);
+  if (words.length > 0) {
+    words.unshift(...second.split(" "));
+    second = `${take(max - 1)}…`;
+  }
+  return [first, second];
+}
+
+/**
+ * One row of the task list: key = task id. A numbered gutter (id over the status icon), then two
+ * title lines and a meta line with the status badge, so every row is complete and the same height.
+ */
 export function taskRow(state: TabState, task: Task): ListRow {
   const badge = statusBadge(task, runOf(state, task.id));
   const id = task.id;
-  const node = hrow(
+  const [line1, line2] = titleLines(task.title);
+  const titleStyle = { size: "sm", weight: "medium", color: "text_strong", wrap: "no_wrap" } as const;
+  const node = ui.flex(
     id,
     [
-      hrow(
-        `${id}-left`,
+      ui.flex(
+        `${id}-gutter`,
         [
+          ui.text(`${id}-number`, id, { size: "sm", weight: "medium", font: "mono", color: "text_subtle", wrap: "no_wrap" }),
           statusIcon(`${id}-icon`, task, badge),
-          vstack(`${id}-text`, [
-            ui.text(`${id}-title`, task.title, { size: "sm", weight: "medium", color: "text_strong", wrap: "no_wrap" }),
-            ui.text(`${id}-meta`, metaLine(task), { size: "xs", color: "text_muted", wrap: "no_wrap" }),
-          ]),
         ],
-        { gap: "md" },
+        { direction: "column", align: "center", style: { gap: "xs", width: { fixed: 32 } } },
       ),
-      ui.badge(`${id}-badge`, badge.text, badge.tone),
+      vstack(`${id}-text`, [
+        ui.text(`${id}-title`, line1, titleStyle),
+        ui.text(`${id}-title-2`, line2 || " ", titleStyle),
+        hrow(`${id}-meta-row`, [
+          ui.badge(`${id}-badge`, badge.text, badge.tone),
+          ui.text(`${id}-meta`, metaLine(task), { size: "xs", color: "text_muted", wrap: "no_wrap" }),
+        ]),
+      ]),
     ],
-    { width: "fill", padding: "sm", gap: "md" },
-    "between",
+    { direction: "row", align: "start", style: { width: "fill", padding: "sm", gap: "md" } },
   );
   return { node };
 }
@@ -353,7 +390,7 @@ export function tasksPane(state: TabState): Node {
     {
       direction: "column",
       align: "stretch",
-      style: { ...PANEL, width: { fixed: 380 }, padding: "md", gap: "md" },
+      style: { ...PANEL, width: { fixed: 420 }, padding: "md", gap: "md" },
     },
   );
 }
