@@ -36,8 +36,8 @@ The extension activates in groups that contain `plans/README.md`. Open it with *
   an empty plan by hand and adds a TODO row.
 - **Read and edit**: click a task in the list to read its plan (the **Tasks** filter narrows the
   list to To do, Running, Done or Blocked; the task's pane has Run, Run in worktree, Compare agents
-  and the editors). The plan shows one section at a time (Overview, then each `##` heading, or
-  **Whole plan**), picked above the text. **Edit in editor** opens the file in Krad's
+  and the editors). The plan shows one section at a time, picked above the text: **All** (the whole
+  plan), then Overview and each `##` heading. It opens on the first section. **Edit in editor** opens the file in Krad's
   editor; **Edit with a prompt** (the magic button) asks what should change and opens the chosen
   agent on that plan file only, to rewrite it without carrying it out. **Change status** writes
   `plans/README.md` (BLOCKED and REJECTED ask for a one-line reason). The views refresh when a plan
