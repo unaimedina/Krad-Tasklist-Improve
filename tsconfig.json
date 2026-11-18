@@ -6,6 +6,7 @@
     "outDir": "dist",
     "rootDir": "src",
     "strict": true,
+    "noEmit": true,
     "noUncheckedIndexedAccess": true,
     "skipLibCheck": true,
     "types": ["node"]
