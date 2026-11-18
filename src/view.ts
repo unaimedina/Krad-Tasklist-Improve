@@ -11,7 +11,8 @@ export const ACTIONS = {
   variants: "variants",        // compare agents on this task with Krad variants
   edit: "edit",                // open the plan file in Krad's editor
   quickEdit: "quick-edit",     // show the in-tab Markdown editor form
-  saveEdit: "save-edit",       // form submit of the quick editor
+  saveEdit: "save-edit",       // Save button (or submit) of the quick editor
+  editText: "edit-text",       // input events of the quick editor's multiline input
   cancelEdit: "cancel-edit",
   setStatus: "set-status",     // select change on the detail pane
   filter: "filter",            // select change of the task list filter
@@ -527,7 +528,8 @@ export function detailTop(state: TabState, task: Task): Node {
         ui.button("detail-run", ACTIONS.run, {
           label: starting ? "Starting…" : "Run",
           icon: starting ? "loading" : "play",
-          variant: "primary",
+          // While the quick editor is open, Save is the screen's one accent.
+          variant: state.editing ? "secondary" : "primary",
           enabled: starting ? "no" : "yes",
         }),
       ];
@@ -603,19 +605,48 @@ export function detailTop(state: TabState, task: Task): Node {
   return stack(KEYS.detailTop, children);
 }
 
+/**
+ * The quick editor: a compact bar (what is edited, Cancel, Save) over a multiline input with the
+ * whole plan file. A form field renders as a one-line input in the app, so the editor is a plain
+ * multiline input whose text reaches the program through input events (ACTIONS.editText) and is
+ * written by Save.
+ */
+function quickEditor(state: TabState): Node {
+  const task = selectedTask(state);
+  const path = task ? relativePath(state.set.root, task.file) : "";
+  const bar = hrow(
+    "plan-edit-bar",
+    [
+      ui.text("plan-edit-label", `Editing ${path}`, { size: "xs", color: "text_muted", wrap: "no_wrap" }),
+      hrow(
+        "plan-edit-buttons",
+        [
+          ui.button("detail-cancel-edit", ACTIONS.cancelEdit, { label: "Cancel", variant: "ghost" }),
+          ui.button("detail-save-edit", ACTIONS.saveEdit, { label: "Save", icon: "check", variant: "primary" }),
+        ],
+        { gap: "xs" },
+      ),
+    ],
+    { width: "fill" },
+    "between",
+  );
+  const input = ui.input("plan-input", ACTIONS.editText, {
+    value: state.planText ?? "",
+    kind: "multiline",
+    placeholder: "The plan, in Markdown",
+  });
+  return stack(
+    KEYS.plan,
+    [bar, { key: "plan-input-scroll", type: "scroll", direction: "column", style: { height: "fill" }, children: [input] }],
+    { height: "fill", gap: "sm" },
+  );
+}
+
 /** The plan text (or the quick editor) in a scroll that takes the rest of the pane's height. */
 export function planPane(state: TabState): Node {
   let children: Node[];
   if (state.editing) {
-    children = [
-      ui.form(
-        "plan-form",
-        ACTIONS.saveEdit,
-        [{ key: "text", label: "Plan (Markdown)", type: "text", kind: "multiline", value: state.planText ?? "" }],
-        "Save",
-      ),
-      ui.button("detail-cancel-edit", ACTIONS.cancelEdit, { label: "Cancel", icon: "cancel", variant: "ghost" }),
-    ];
+    return quickEditor(state);
   } else if (state.planText === null) {
     children = [ui.text("detail-unreadable", "Cannot read the plan file.", { size: "sm", color: "text_muted" })];
   } else {

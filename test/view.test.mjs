@@ -325,10 +325,25 @@ test("taskDetail shows the plan, the note, and the quick editor", () => {
   assert.ok(!find(detail, (n) => n.type === "form"));
 
   const editing = taskDetail(makeState({ selected: "003", planText: plan, editing: true }));
-  const form = find(editing, (n) => n.type === "form");
-  assert.equal(form.submit, ACTIONS.saveEdit);
-  assert.equal(form.fields[0].value, plan);
-  assert.ok(find(find(editing, (n) => n.type === "scroll"), (n) => n.action === ACTIONS.cancelEdit));
+  // No form (it renders one line): a multiline input with the whole file, under a compact bar.
+  assert.ok(!find(editing, (n) => n.type === "form"));
+  const editor = find(editing, (n) => n.key === KEYS.plan);
+  assert.equal(editor.align, "stretch");
+  assert.equal(editor.style.height, "fill");
+  const input = find(editor, (n) => n.type === "input");
+  assert.equal(input.action, ACTIONS.editText);
+  assert.equal(input.kind, "multiline");
+  assert.equal(input.value, plan);
+  const bar = find(editor, (n) => n.key === "plan-edit-bar");
+  assert.equal(bar.justify, "between");
+  assert.equal(find(bar, (n) => n.key === "plan-edit-label").text, "Editing plans/003-task-003.md");
+  assert.equal(find(bar, (n) => n.action === ACTIONS.cancelEdit).variant, "ghost");
+  const save = find(bar, (n) => n.action === ACTIONS.saveEdit);
+  assert.equal(save.type, "button");
+  assert.equal(save.variant, "primary");
+  // Save is the one accent while editing: Run steps back.
+  assert.equal(walk(editing).filter((n) => n.variant === "primary").length, 1);
+  assert.equal(find(editing, (n) => n.key === "detail-run").variant, "secondary");
   assert.ok(!find(editing, (n) => n.type === "markdown"));
 
   // Live run: a spinner instead of Run, worktree disabled, run info shown.

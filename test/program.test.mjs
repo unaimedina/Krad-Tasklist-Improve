@@ -344,3 +344,54 @@ test("tasklist_set_status writes the README row and rejects unknown ids", async 
   const bad = await request("tool/call", { tool: "tasklist_set_status", arguments: { id: "001", status: "FINISHED" }, root: dir });
   assert.equal(bad.result?.outcome, "failed", JSON.stringify(bad));
 });
+
+test("the quick editor saves what was typed into the plan file", async (t) => {
+  const dir = fixtureRoot();
+  const { child, request, notify, waitFor } = startProgram([{ id: "g", name: "g", root: dir }]);
+  t.after(() => {
+    child.kill();
+    rmSync(dir, { recursive: true, force: true });
+  });
+  const ref = { view: "tasklist", instance: dir };
+  const event = (e) => notify("view/event", { ...ref, event: e });
+  const patchWith = (key) => (m) => m.method === "view/patch" && JSON.stringify(m.params.patches).includes(`"key":"${key}"`);
+  await request("initialize", INIT);
+  await request("view/render", ref);
+  event({ kind: "choose", node: "tasks", items: ["002"] });
+  event({ kind: "click", action: "quick-edit" });
+  const opened = await waitFor(patchWith("plan-input"));
+  const input = findNode(opened.params.patches[0].node, "plan-input");
+  assert.equal(input.kind, "multiline");
+  assert.equal(input.value, readFileSync(join(dir, "plans", "002-b.md"), "utf8"));
+
+  const text = "# Plan 002: Plan B from file\n\n## Steps\n\n1. Edited in the tab.\n";
+  event({ kind: "input", action: "edit-text", text });
+  event({ kind: "click", action: "save-edit" });
+  const saved = await waitFor((m) => patchWith("plan-md")(m) && JSON.stringify(m.params.patches).includes("Edited in the tab"));
+  assert.equal(readFileSync(join(dir, "plans", "002-b.md"), "utf8"), text);
+  const md = saved.params.patches.map((p) => findNode(p.node, "plan-md")).find(Boolean);
+  assert.equal(md.text, "## Steps\n\n1. Edited in the tab.\n");
+});
+
+test("Save without typing leaves the plan file as it was", async (t) => {
+  const dir = fixtureRoot();
+  const { child, request, notify, waitFor } = startProgram([{ id: "g", name: "g", root: dir }]);
+  t.after(() => {
+    child.kill();
+    rmSync(dir, { recursive: true, force: true });
+  });
+  const ref = { view: "tasklist", instance: dir };
+  const before = readFileSync(join(dir, "plans", "003-c.md"), "utf8");
+  await request("initialize", INIT);
+  await request("view/render", ref);
+  notify("view/event", { ...ref, event: { kind: "choose", node: "tasks", items: ["003"] } });
+  notify("view/event", { ...ref, event: { kind: "click", action: "quick-edit" } });
+  notify("view/event", { ...ref, event: { kind: "click", action: "save-edit" } });
+  // The editor opens (plan-input), then Save shows the plan again (plan-md after it).
+  await waitFor((m) => m.method === "view/patch" && JSON.stringify(m.params.patches).includes('"key":"plan-input"'));
+  // Events are handled in order: once a render answers, Save has run.
+  const after = await request("view/render", ref);
+  assert.ok(findNode(after.result, "plan-md"), "the plan shows again");
+  assert.equal(findNode(after.result, "plan-input"), null);
+  assert.equal(readFileSync(join(dir, "plans", "003-c.md"), "utf8"), before);
+});

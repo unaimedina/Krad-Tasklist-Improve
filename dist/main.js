@@ -1011,7 +1011,9 @@ var ACTIONS = {
   quickEdit: "quick-edit",
   // show the in-tab Markdown editor form
   saveEdit: "save-edit",
-  // form submit of the quick editor
+  // Save button (or submit) of the quick editor
+  editText: "edit-text",
+  // input events of the quick editor's multiline input
   cancelEdit: "cancel-edit",
   setStatus: "set-status",
   // select change on the detail pane
@@ -1383,7 +1385,8 @@ function detailTop(state, task) {
     ui.button("detail-run", ACTIONS.run, {
       label: starting ? "Starting\u2026" : "Run",
       icon: starting ? "loading" : "play",
-      variant: "primary",
+      // While the quick editor is open, Save is the screen's one accent.
+      variant: state.editing ? "secondary" : "primary",
       enabled: starting ? "no" : "yes"
     })
   ];
@@ -1455,18 +1458,40 @@ function detailTop(state, task) {
   }
   return stack(KEYS.detailTop, children);
 }
+function quickEditor(state) {
+  const task = selectedTask(state);
+  const path = task ? relativePath(state.set.root, task.file) : "";
+  const bar = hrow(
+    "plan-edit-bar",
+    [
+      ui.text("plan-edit-label", `Editing ${path}`, { size: "xs", color: "text_muted", wrap: "no_wrap" }),
+      hrow(
+        "plan-edit-buttons",
+        [
+          ui.button("detail-cancel-edit", ACTIONS.cancelEdit, { label: "Cancel", variant: "ghost" }),
+          ui.button("detail-save-edit", ACTIONS.saveEdit, { label: "Save", icon: "check", variant: "primary" })
+        ],
+        { gap: "xs" }
+      )
+    ],
+    { width: "fill" },
+    "between"
+  );
+  const input = ui.input("plan-input", ACTIONS.editText, {
+    value: state.planText ?? "",
+    kind: "multiline",
+    placeholder: "The plan, in Markdown"
+  });
+  return stack(
+    KEYS.plan,
+    [bar, { key: "plan-input-scroll", type: "scroll", direction: "column", style: { height: "fill" }, children: [input] }],
+    { height: "fill", gap: "sm" }
+  );
+}
 function planPane(state) {
   let children;
   if (state.editing) {
-    children = [
-      ui.form(
-        "plan-form",
-        ACTIONS.saveEdit,
-        [{ key: "text", label: "Plan (Markdown)", type: "text", kind: "multiline", value: state.planText ?? "" }],
-        "Save"
-      ),
-      ui.button("detail-cancel-edit", ACTIONS.cancelEdit, { label: "Cancel", icon: "cancel", variant: "ghost" })
-    ];
+    return quickEditor(state);
   } else if (state.planText === null) {
     children = [ui.text("detail-unreadable", "Cannot read the plan file.", { size: "sm", color: "text_muted" })];
   } else {
@@ -1556,7 +1581,11 @@ function options(values) {
   };
 }
 function newUi() {
-  return { selected: null, editing: false, filter: "all" };
+  return { selected: null, editing: false, draft: null, filter: "all" };
+}
+function closeEditor(ui2) {
+  ui2.editing = false;
+  ui2.draft = null;
 }
 var current = DEFAULTS;
 var runs = [];
@@ -2159,6 +2188,7 @@ async function taskAction(open, root, action, id, context) {
       const ui2 = uiOf(open.ref.view, root);
       ui2.selected = id;
       ui2.editing = true;
+      ui2.draft = null;
       refreshDetail(open, context);
       return;
     }
@@ -2173,9 +2203,17 @@ async function onViewEvent(event, ref, context) {
   try {
     if (event.kind === "choose" && event.node === KEYS.tasks) {
       ui2.selected = event.items[0] ?? null;
-      ui2.editing = false;
+      closeEditor(ui2);
       refreshDetail(open, context);
       return;
+    }
+    if (event.kind === "input" && event.action === ACTIONS.editText) {
+      if (ui2.editing) ui2.draft = event.text;
+      return;
+    }
+    if (event.kind === "click" && event.action === ACTIONS.saveEdit || event.kind === "submit" && event.action === ACTIONS.editText) {
+      if (event.kind === "submit") ui2.draft = event.text;
+      return saveEditor(open, root, ui2, context);
     }
     if (event.kind === "click") {
       switch (event.action) {
@@ -2196,7 +2234,7 @@ async function onViewEvent(event, ref, context) {
         case ACTIONS.stop:
           return await stopAutoRun(root, context);
         case ACTIONS.cancelEdit:
-          ui2.editing = false;
+          closeEditor(ui2);
           return refreshDetail(open, context);
         case ACTIONS.run:
         case ACTIONS.runWorktree:
@@ -2233,19 +2271,24 @@ async function onViewEvent(event, ref, context) {
       refreshAll(context);
       return;
     }
-    if (event.kind === "form" && event.action === ACTIONS.saveEdit) {
-      if (ui2.selected === null) return;
-      const found = findTask(root, ui2.selected);
-      if (!found) return;
-      writeFileSync2(found.task.file, String(event.values["text"] ?? ""), "utf8");
-      ui2.editing = false;
-      refreshRoot(root, context);
-      app.toast(`Saved ${basename3(found.task.file)}`, "success");
-    }
   } catch (error) {
     app.toast(failure(error), "error");
     refreshRoot(root, context);
   }
+}
+function saveEditor(open, root, ui2, context) {
+  if (ui2.selected === null || !ui2.editing) return;
+  const found = findTask(root, ui2.selected);
+  const draft = ui2.draft;
+  closeEditor(ui2);
+  if (!found) {
+    refreshDetail(open, context);
+    return;
+  }
+  if (draft !== null) writeFileSync2(found.task.file, draft, "utf8");
+  refreshDetail(open, context);
+  refreshRoot(root, context);
+  if (draft !== null) context.app.toast(`Saved ${basename3(found.task.file)}`, "success");
 }
 async function newTask(root, context, open = null) {
   const title = await context.app.input({
@@ -2257,7 +2300,7 @@ async function newTask(root, context, open = null) {
   if (open !== null) {
     const ui2 = uiOf(open.ref.view, root);
     ui2.selected = basename3(file).slice(0, 3);
-    ui2.editing = false;
+    closeEditor(ui2);
   }
   refreshRoot(root, context);
   await context.app.openFile({ path: file });

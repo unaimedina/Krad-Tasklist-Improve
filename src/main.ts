@@ -102,11 +102,19 @@ function options(values: SettingsValues): Options {
 interface ViewUi {
   selected: string | null;
   editing: boolean;
+  /** The quick editor's text as last typed; null = untouched since it opened. */
+  draft: string | null;
   filter: Filter;
 }
 
 function newUi(): ViewUi {
-  return { selected: null, editing: false, filter: "all" };
+  return { selected: null, editing: false, draft: null, filter: "all" };
+}
+
+/** Closes the quick editor of a view and forgets what was typed. */
+function closeEditor(ui: ViewUi): void {
+  ui.editing = false;
+  ui.draft = null;
 }
 
 interface Session {
@@ -841,6 +849,7 @@ async function taskAction(open: OpenView, root: string, action: string, id: stri
       const ui = uiOf(open.ref.view, root);
       ui.selected = id;
       ui.editing = true;
+      ui.draft = null;
       refreshDetail(open, context);
       return;
     }
@@ -856,9 +865,21 @@ async function onViewEvent(event: ViewEvent, ref: ViewRef, context: Context): Pr
   try {
     if (event.kind === "choose" && event.node === KEYS.tasks) {
       ui.selected = event.items[0] ?? null;
-      ui.editing = false;
+      closeEditor(ui);
       refreshDetail(open, context);
       return;
+    }
+    if (event.kind === "input" && event.action === ACTIONS.editText) {
+      // Keep what is typed; nothing is sent back, so the input keeps its caret.
+      if (ui.editing) ui.draft = event.text;
+      return;
+    }
+    if (
+      (event.kind === "click" && event.action === ACTIONS.saveEdit) ||
+      (event.kind === "submit" && event.action === ACTIONS.editText)
+    ) {
+      if (event.kind === "submit") ui.draft = event.text;
+      return saveEditor(open, root, ui, context);
     }
     if (event.kind === "click") {
       switch (event.action) {
@@ -879,7 +900,7 @@ async function onViewEvent(event: ViewEvent, ref: ViewRef, context: Context): Pr
         case ACTIONS.stop:
           return await stopAutoRun(root, context);
         case ACTIONS.cancelEdit:
-          ui.editing = false;
+          closeEditor(ui);
           return refreshDetail(open, context);
         case ACTIONS.run:
         case ACTIONS.runWorktree:
@@ -916,19 +937,27 @@ async function onViewEvent(event: ViewEvent, ref: ViewRef, context: Context): Pr
       refreshAll(context);
       return;
     }
-    if (event.kind === "form" && event.action === ACTIONS.saveEdit) {
-      if (ui.selected === null) return;
-      const found = findTask(root, ui.selected);
-      if (!found) return;
-      writeFileSync(found.task.file, String(event.values["text"] ?? ""), "utf8");
-      ui.editing = false;
-      refreshRoot(root, context);
-      app.toast(`Saved ${basename(found.task.file)}`, "success");
-    }
   } catch (error) {
     app.toast(failure(error), "error");
     refreshRoot(root, context);
   }
+}
+
+/** Save in the quick editor: writes what was typed (if anything) and shows the plan again. */
+function saveEditor(open: OpenView, root: string, ui: ViewUi, context: Context): void {
+  if (ui.selected === null || !ui.editing) return;
+  const found = findTask(root, ui.selected);
+  const draft = ui.draft;
+  closeEditor(ui);
+  if (!found) {
+    refreshDetail(open, context);
+    return;
+  }
+  if (draft !== null) writeFileSync(found.task.file, draft, "utf8");
+  // This view shows the plan again; every view of the group shows the new text and title.
+  refreshDetail(open, context);
+  refreshRoot(root, context);
+  if (draft !== null) context.app.toast(`Saved ${basename(found.task.file)}`, "success");
 }
 
 /** Writes an empty plan; selects it in the view it was asked from, if any. */
@@ -942,7 +971,7 @@ async function newTask(root: string, context: Context, open: OpenView | null = n
   if (open !== null) {
     const ui = uiOf(open.ref.view, root);
     ui.selected = basename(file).slice(0, 3);
-    ui.editing = false;
+    closeEditor(ui);
   }
   refreshRoot(root, context);
   await context.app.openFile({ path: file });

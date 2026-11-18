@@ -52,7 +52,9 @@ var ACTIONS = {
   quickEdit: "quick-edit",
   // show the in-tab Markdown editor form
   saveEdit: "save-edit",
-  // form submit of the quick editor
+  // Save button (or submit) of the quick editor
+  editText: "edit-text",
+  // input events of the quick editor's multiline input
   cancelEdit: "cancel-edit",
   setStatus: "set-status",
   // select change on the detail pane
@@ -424,7 +426,8 @@ function detailTop(state, task) {
     ui.button("detail-run", ACTIONS.run, {
       label: starting ? "Starting\u2026" : "Run",
       icon: starting ? "loading" : "play",
-      variant: "primary",
+      // While the quick editor is open, Save is the screen's one accent.
+      variant: state.editing ? "secondary" : "primary",
       enabled: starting ? "no" : "yes"
     })
   ];
@@ -496,18 +499,40 @@ function detailTop(state, task) {
   }
   return stack(KEYS.detailTop, children);
 }
+function quickEditor(state) {
+  const task = selectedTask(state);
+  const path = task ? relativePath(state.set.root, task.file) : "";
+  const bar = hrow(
+    "plan-edit-bar",
+    [
+      ui.text("plan-edit-label", `Editing ${path}`, { size: "xs", color: "text_muted", wrap: "no_wrap" }),
+      hrow(
+        "plan-edit-buttons",
+        [
+          ui.button("detail-cancel-edit", ACTIONS.cancelEdit, { label: "Cancel", variant: "ghost" }),
+          ui.button("detail-save-edit", ACTIONS.saveEdit, { label: "Save", icon: "check", variant: "primary" })
+        ],
+        { gap: "xs" }
+      )
+    ],
+    { width: "fill" },
+    "between"
+  );
+  const input = ui.input("plan-input", ACTIONS.editText, {
+    value: state.planText ?? "",
+    kind: "multiline",
+    placeholder: "The plan, in Markdown"
+  });
+  return stack(
+    KEYS.plan,
+    [bar, { key: "plan-input-scroll", type: "scroll", direction: "column", style: { height: "fill" }, children: [input] }],
+    { height: "fill", gap: "sm" }
+  );
+}
 function planPane(state) {
   let children;
   if (state.editing) {
-    children = [
-      ui.form(
-        "plan-form",
-        ACTIONS.saveEdit,
-        [{ key: "text", label: "Plan (Markdown)", type: "text", kind: "multiline", value: state.planText ?? "" }],
-        "Save"
-      ),
-      ui.button("detail-cancel-edit", ACTIONS.cancelEdit, { label: "Cancel", icon: "cancel", variant: "ghost" })
-    ];
+    return quickEditor(state);
   } else if (state.planText === null) {
     children = [ui.text("detail-unreadable", "Cannot read the plan file.", { size: "sm", color: "text_muted" })];
   } else {
