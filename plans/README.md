@@ -18,7 +18,7 @@ starting, honor its STOP conditions, and update your row when done.
 |------|-------|----------|--------|------------|--------|
 | 001  | Scaffold the Tasklist extension from the krad-docker skeleton | P1 | S | — | DONE |
 | 002  | Read and write the improve skill's plans (`src/plans.ts`) | P1 | M | 001 | DONE |
-| 003  | Draw the Tasklist tab (`src/view.ts`) | P1 | M | 001 | TODO |
+| 003  | Draw the Tasklist tab (`src/view.ts`) | P1 | M | 001 | DONE |
 | 004  | Launch agents on tasks and follow their state (`src/runner.ts`) | P1 | M | 001 | TODO |
 | 005  | Wire the tab, agent runs, the auto-run session and agent tools | P1 | L | 002, 003, 004 | TODO |
 
