@@ -1,3 +1,6 @@
+// src/view.ts
+import { basename, relative } from "node:path";
+
 // node_modules/@krad-ade/extension/dist/view.js
 function node(type, key, fields) {
   return { key, type, ...fields };
@@ -38,10 +41,8 @@ var TASK_STATUSES = ["TODO", "IN PROGRESS", "DONE", "BLOCKED", "REJECTED"];
 
 // src/view.ts
 var ACTIONS = {
-  select: "select",
-  // item action on a task row
   run: "run",
-  // item action / button: run the task in the group folder
+  // row menu / button: run the task in the group folder
   runWorktree: "run-worktree",
   // run the task in a new git worktree
   variants: "variants",
@@ -49,12 +50,11 @@ var ACTIONS = {
   edit: "edit",
   // open the plan file in Krad's editor
   quickEdit: "quick-edit",
-  // show the in-tab Markdown editor form
-  saveEdit: "save-edit",
-  // form submit of the quick editor
-  cancelEdit: "cancel-edit",
+  // edit the plan with a prompt: an agent changes the Markdown
   setStatus: "set-status",
   // select change on the detail pane
+  filter: "filter",
+  // select change of the task list filter
   newTask: "new-task",
   refresh: "refresh",
   runNext: "run-next",
@@ -62,25 +62,48 @@ var ACTIONS = {
   stop: "stop",
   generate: "generate",
   // write plans with /improve
-  reconcile: "reconcile"
+  reconcile: "reconcile",
   // /improve reconcile
+  openTab: "open-tab",
+  // Tasks page: open the Tasklist tab of its group
+  group: "group"
+  // Tasks page: select change to switch group
 };
 var KEYS = {
   root: "root",
-  toolbar: "toolbar",
-  summary: "summary",
-  tasks: "tasks",
-  detail: "detail",
+  header: "header",
+  session: "session",
   problems: "problems",
-  session: "session"
+  body: "body",
+  tasksPane: "tasks-pane",
+  tasks: "tasks",
+  // the task list (ui.list, rows served by rows())
+  detail: "detail",
+  detailTop: "detail-top",
+  // the plan pane without the plan text
+  plan: "detail-plan",
+  // the scroll with the plan Markdown or the quick editor
+  tasksPaneHeader: "tasks-pane-header",
+  tasksEmpty: "tasks-empty",
+  // the sentence that replaces an empty list
+  empty: "empty"
 };
-var STATUS_ICONS = {
-  TODO: "note",
-  "IN PROGRESS": "loading",
-  DONE: "check",
-  BLOCKED: "flag",
-  REJECTED: "close"
+var FILTERS = ["all", "todo", "running", "done", "blocked"];
+var FILTER_LABELS = {
+  all: "All",
+  todo: "To do",
+  running: "Running",
+  done: "Done",
+  blocked: "Blocked"
 };
+var busyKey = {
+  run: (id) => `${ACTIONS.run}:${id}`,
+  runWorktree: (id) => `${ACTIONS.runWorktree}:${id}`,
+  runNext: ACTIONS.runNext
+};
+function isBusy(state, key) {
+  return state.busy?.includes(key) ?? false;
+}
 var STATUS_BADGES = {
   TODO: { text: "todo", tone: "neutral" },
   "IN PROGRESS": { text: "in progress", tone: "info" },
@@ -88,7 +111,13 @@ var STATUS_BADGES = {
   BLOCKED: { text: "blocked", tone: "error" },
   REJECTED: { text: "rejected", tone: "neutral" }
 };
+var HARNESS_NAMES = {
+  claude: "Claude Code",
+  codex: "Codex",
+  opencode: "opencode"
+};
 var LIVE_STATES = /* @__PURE__ */ new Set(["starting", "working", "idle", "unknown"]);
+var PANEL = { background: "panel", border: "border", radius: "lg" };
 function runOf(state, taskId) {
   return state.runs.find((run) => run.taskId === taskId) ?? null;
 }
@@ -105,203 +134,457 @@ function statusBadge(task, run) {
   }
   return STATUS_BADGES[task.status];
 }
-function toolbar(state) {
-  const todo = hasTodo(state) ? "yes" : "no";
-  return ui.row(
-    KEYS.toolbar,
-    [
-      ui.button("toolbar-new", ACTIONS.newTask, { label: "New task", icon: "add", variant: "secondary" }),
-      ui.button("toolbar-generate", ACTIONS.generate, {
-        label: "Write plans",
-        icon: "magic",
-        variant: "secondary",
-        tooltip: "Write plans with /improve"
-      }),
-      ui.button("toolbar-reconcile", ACTIONS.reconcile, {
-        label: "Reconcile",
-        icon: "repeat",
-        variant: "secondary",
-        tooltip: "Check plans against the code with /improve reconcile"
-      }),
-      ui.button("toolbar-refresh", ACTIONS.refresh, { label: "Refresh", icon: "refresh", variant: "ghost" }),
-      ui.button("toolbar-run-next", ACTIONS.runNext, {
-        label: "Run next",
-        icon: "play",
-        variant: "primary",
-        enabled: todo
-      }),
-      state.session.active ? ui.button("toolbar-stop", ACTIONS.stop, { label: "Stop", icon: "stop", variant: "danger" }) : ui.button("toolbar-auto-run", ACTIONS.autoRun, {
-        label: "Auto-run",
-        icon: "flash",
-        variant: "secondary",
-        enabled: todo,
-        tooltip: "Run every TODO task one after another"
-      })
-    ],
-    { gap: "sm" }
-  );
+function stack(key, children, style = {}) {
+  return ui.flex(key, children, { direction: "column", align: "stretch", style: { gap: "md", ...style } });
 }
-function summary(state) {
-  if (state.set.dir === null) {
-    return ui.text(KEYS.summary, "No plans in this folder yet. Write some with /improve or add a task.", {
-      color: "text_muted",
-      wrap: "wrap"
-    });
-  }
+function band(key, children, style = {}) {
+  return ui.flex(key, children, { direction: "row", align: "stretch", style: { gap: "md", ...style } });
+}
+function iconButton(key, action, icon, tooltip, enabled = "yes") {
+  return ui.button(key, action, { icon, variant: "ghost", tooltip, enabled });
+}
+function hrow(key, children, style = {}, justify = "start") {
+  return ui.flex(key, children, { direction: "row", align: "center", justify, style: { gap: "sm", ...style } });
+}
+function vstack(key, children, style = {}) {
+  return ui.flex(key, children, { direction: "column", align: "start", style: { gap: "xs", ...style } });
+}
+function counts(state) {
   const tasks = state.set.tasks;
-  const done = tasks.filter((task) => task.status === "DONE").length;
-  const running = tasks.filter((task) => isLive(runOf(state, task.id))).length;
-  const blocked = tasks.filter((task) => task.status === "BLOCKED").length;
-  const parts = [`${done} of ${tasks.length} done`];
-  if (running > 0) parts.push(`${running} running`);
-  if (blocked > 0) parts.push(`${blocked} blocked`);
-  let text = parts.join(" \xB7 ");
-  if (state.session.active) {
-    text = `Auto-run: ${text}`;
-    if (state.session.message) text = `${text} \xB7 ${state.session.message}`;
-  }
-  return ui.text(KEYS.summary, text, { color: "text_subtle", wrap: "wrap" });
-}
-function taskMenu() {
-  return [
-    { action: ACTIONS.run, label: "Run here", icon: "play" },
-    { action: ACTIONS.runWorktree, label: "Run in a worktree", icon: "git-branch" },
-    { action: ACTIONS.variants, label: "Compare agents", icon: "exchange" },
-    { action: ACTIONS.edit, label: "Edit in editor", icon: "pencil" },
-    { action: ACTIONS.quickEdit, label: "Quick edit", icon: "note" }
-  ];
-}
-function taskItem(task, run) {
-  const actions = [{ action: ACTIONS.select, label: "Open", icon: "search" }];
-  if ((task.status === "TODO" || task.status === "BLOCKED") && !isLive(run)) {
-    actions.push({ action: ACTIONS.run, label: "Run", icon: "play" });
-  }
-  const description = [
-    task.priority,
-    task.effort,
-    task.dependsOn.length > 0 ? `after ${task.dependsOn.join(", ")}` : null
-  ].filter(Boolean).join(" \xB7 ");
   return {
-    key: task.id,
-    label: `${task.id} \xB7 ${task.title}`,
-    description: description || null,
-    icon: STATUS_ICONS[task.status],
-    badge: statusBadge(task, run),
-    expansion: "leaf",
-    actions,
-    menu: taskMenu()
+    done: tasks.filter((task) => task.status === "DONE").length,
+    total: tasks.length,
+    running: tasks.filter((task) => isLive(runOf(state, task.id))).length,
+    blocked: tasks.filter((task) => task.status === "BLOCKED").length
   };
 }
-function taskItems(state) {
-  return state.set.tasks.map((task) => taskItem(task, runOf(state, task.id)));
+function doneChip(key, state) {
+  const { done, total } = counts(state);
+  return ui.badge(key, `${done}/${total} done`, total > 0 && done === total ? "success" : "neutral");
 }
-function taskTree(state) {
-  return ui.tree(KEYS.tasks, taskItems(state));
-}
-function taskDetail(state) {
-  const task = state.selected === null ? void 0 : state.set.tasks.find((t) => t.id === state.selected);
-  if (task === void 0) {
-    return ui.column(KEYS.detail, [ui.text("detail-empty", "Select a task to read its plan.", { color: "text_muted" })], {
-      width: "fill",
-      padding: "sm"
-    });
+function filteredTasks(state) {
+  const tasks = state.set.tasks;
+  switch (state.filter) {
+    case "todo":
+      return tasks.filter((task) => task.status === "TODO");
+    case "running":
+      return tasks.filter((task) => isLive(runOf(state, task.id)) || task.status === "IN PROGRESS");
+    case "done":
+      return tasks.filter((task) => task.status === "DONE");
+    case "blocked":
+      return tasks.filter((task) => task.status === "BLOCKED");
+    default:
+      return tasks;
   }
+}
+function metaLine(task) {
+  return [task.priority, task.effort, task.dependsOn.length > 0 ? `after ${task.dependsOn.join(", ")}` : null].filter(Boolean).join(" \xB7 ");
+}
+var PANE_W = 440;
+var PANE_PAD = 12;
+var APP_ROW_PAD_X = 8;
+var ROW_BODY_W = PANE_W - 2 * PANE_PAD - 2 * APP_ROW_PAD_X;
+var ROW_PAD = 8;
+var ROW_GAP = 8;
+var ROW_LEAD_W = 36;
+var ROW_STATUS_W = 104;
+var ROW_TEXT_W = ROW_BODY_W - 2 * ROW_PAD - ROW_LEAD_W - ROW_STATUS_W - 2 * ROW_GAP;
+var TITLE_LINE_CHARS = 32;
+function titleLines(title, max = TITLE_LINE_CHARS) {
+  const words = title.replace(/`/g, "").replace(/\s+/g, " ").trim().split(" ");
+  const take = (limit) => {
+    let line = "";
+    while (words.length > 0) {
+      const next = line ? `${line} ${words[0]}` : words[0];
+      if (next.length > limit) break;
+      line = next;
+      words.shift();
+    }
+    if (line === "" && words.length > 0) {
+      line = words[0].slice(0, limit);
+      words[0] = words[0].slice(limit);
+    }
+    return line;
+  };
+  const first = take(max);
+  let second = take(max);
+  if (words.length > 0) {
+    words.unshift(...second.split(" "));
+    second = `${take(max - 1)}\u2026`;
+  }
+  return [first, second];
+}
+function taskRow(state, task) {
   const run = runOf(state, task.id);
-  const live = isLive(run) ? "no" : "yes";
-  const entries = [
-    { label: "Priority", value: task.priority ?? "\u2014" },
-    { label: "Effort", value: task.effort ?? "\u2014" },
-    { label: "Risk", value: task.risk ?? "\u2014" },
-    { label: "Depends on", value: task.dependsOn.length > 0 ? task.dependsOn.join(", ") : "\u2014" },
-    { label: "File", value: task.file }
+  const badge = statusBadge(task, run);
+  const id = task.id;
+  const [line1, line2] = titleLines(task.title);
+  const titleStyle = { size: "sm", weight: "medium", color: "text_strong", wrap: "no_wrap" };
+  const node2 = ui.flex(
+    id,
+    [
+      ui.flex(
+        `${id}-lead`,
+        [ui.text(`${id}-number`, id, { size: "sm", font: "mono", color: "text_muted", wrap: "no_wrap" })],
+        { direction: "column", align: "center", style: { width: { fixed: ROW_LEAD_W } } }
+      ),
+      vstack(
+        `${id}-text`,
+        [
+          ui.text(`${id}-title`, line1, titleStyle),
+          ui.text(`${id}-title-2`, line2 || "\xA0", titleStyle),
+          ui.text(`${id}-meta`, metaLine(task) || "\xA0", { size: "xs", color: "text_muted", wrap: "no_wrap" })
+        ],
+        { width: { fixed: ROW_TEXT_W } }
+      ),
+      ui.flex(
+        `${id}-status`,
+        [...isLive(run) ? [ui.spinner(`${id}-spinner`)] : [], ui.badge(`${id}-badge`, badge.text, badge.tone)],
+        { direction: "row", align: "center", justify: "end", style: { gap: "xs", width: { fixed: ROW_STATUS_W } } }
+      )
+    ],
+    { direction: "row", align: "center", style: { width: { fixed: ROW_BODY_W }, padding: "sm", gap: "sm" } }
+  );
+  return { node: node2 };
+}
+function taskRows(state, start = 0, end = Number.MAX_SAFE_INTEGER) {
+  return filteredTasks(state).slice(start, end).map((task) => taskRow(state, task));
+}
+function header(state, page = null) {
+  const runnable = hasTodo(state) ? "yes" : "no";
+  const left = [
+    ui.icon("header-icon", "tasks", "text_subtle"),
+    ui.text("header-title", "Tasklist", { size: "lg", weight: "bold", color: "text_strong", wrap: "no_wrap" })
   ];
-  if (run !== null) {
-    entries.push(
-      { label: "Agent", value: run.harness },
-      { label: "Where", value: run.cwd },
-      { label: "Branch", value: run.branch ?? "\u2014" },
-      { label: "State", value: run.state },
-      { label: "Started", value: run.startedAt }
+  const group = page?.groups.find((g) => g.value === state.set.root);
+  if (page !== null && page.groups.length > 1 && group !== void 0) {
+    left.push(ui.select("header-group", ACTIONS.group, page.groups, group.value));
+  } else {
+    left.push(
+      ui.text("header-folder", basename(state.set.root) || state.set.root, {
+        size: "sm",
+        color: "text_muted",
+        wrap: "no_wrap"
+      })
     );
   }
+  if (state.set.dir !== null) {
+    const { running, blocked } = counts(state);
+    left.push(doneChip("header-done", state));
+    if (running > 0) left.push(ui.badge("header-running", `${running} running`, "info"));
+    if (blocked > 0) left.push(ui.badge("header-blocked", `${blocked} blocked`, "error"));
+  }
+  const toolButtons = [
+    iconButton("toolbar-new", ACTIONS.newTask, "add", "New task"),
+    iconButton("toolbar-generate", ACTIONS.generate, "magic", "Write plans with /improve"),
+    iconButton("toolbar-reconcile", ACTIONS.reconcile, "repeat", "Reconcile plans with /improve"),
+    iconButton("toolbar-refresh", ACTIONS.refresh, "refresh", "Refresh")
+  ];
+  if (page !== null) toolButtons.push(iconButton("toolbar-open-tab", ACTIONS.openTab, "open-external", "Open in a tab"));
+  const tools = hrow("header-tools", toolButtons, { padding: "xs", gap: "xs", radius: "full", border: "border" });
+  const startingNext = isBusy(state, busyKey.runNext);
+  const right = [
+    tools,
+    ui.button("toolbar-run-next", ACTIONS.runNext, {
+      label: startingNext ? "Starting\u2026" : "Run next",
+      icon: startingNext ? "loading" : "play",
+      variant: "secondary",
+      enabled: startingNext ? "no" : runnable,
+      tooltip: "Run the next TODO task whose dependencies are done"
+    }),
+    state.session.active ? ui.button("toolbar-stop", ACTIONS.stop, { label: "Stop", icon: "stop", variant: "danger" }) : ui.button("toolbar-auto-run", ACTIONS.autoRun, {
+      label: "Auto-run",
+      icon: "flash",
+      variant: "secondary",
+      enabled: runnable,
+      tooltip: "Run every TODO task one after another"
+    })
+  ];
+  return hrow(
+    KEYS.header,
+    [hrow("header-left", left), hrow("header-right", right, { gap: "md" })],
+    { width: "fill", gap: "md" },
+    "between"
+  );
+}
+function sessionStrip(state) {
+  const { session } = state;
+  const parts = [`Auto-run \xB7 ${session.done} of ${session.total} done`];
+  if (session.running > 0) parts.push(`${session.running} running`);
   const children = [
-    ui.text("detail-title", `${task.id} \xB7 ${task.title}`, { size: "lg", weight: "bold", wrap: "wrap" }),
+    ui.spinner("session-spinner"),
+    ui.text("session-text", parts.join(" \xB7 "), { size: "sm", color: "text_default", wrap: "no_wrap" })
+  ];
+  if (session.message) {
+    children.push(ui.text("session-message", session.message, { size: "sm", color: "text_muted", wrap: "wrap" }));
+  }
+  return hrow(KEYS.session, children, {
+    width: "fill",
+    background: "panel",
+    border: "border",
+    radius: "md",
+    padding: "md"
+  });
+}
+var PROBLEMS_SHOWN = 3;
+function problemsPanel(problems) {
+  const children = problems.slice(0, PROBLEMS_SHOWN).map((problem, index) => ui.text(`problem-${index}`, problem, { size: "xs", color: "warning", wrap: "wrap" }));
+  if (problems.length > PROBLEMS_SHOWN) {
+    children.push(
+      ui.text("problems-more", `and ${problems.length - PROBLEMS_SHOWN} more`, { size: "xs", color: "text_muted" })
+    );
+  }
+  return vstack(KEYS.problems, children, { padding: "md", border: "border", radius: "md", width: "fill" });
+}
+var FILTER_EMPTY = {
+  all: "No tasks yet.",
+  todo: "Nothing left to do.",
+  running: "No agent is working on a task.",
+  done: "No task is done yet.",
+  blocked: "No task is blocked."
+};
+function tasksPaneHeader(state) {
+  const shown = filteredTasks(state).length;
+  const total = state.set.tasks.length;
+  return hrow(KEYS.tasksPaneHeader, [
+    ui.text("tasks-label", "Tasks", { size: "sm", weight: "medium", color: "text_strong", wrap: "no_wrap" }),
+    ui.badge("tasks-count", shown === total ? `${total}` : `${shown} of ${total}`)
+  ]);
+}
+function tasksPane(state) {
+  const shown = filteredTasks(state).length;
+  const filter = ui.select(
+    "tasks-filter",
+    ACTIONS.filter,
+    FILTERS.map((value) => ({ value, label: FILTER_LABELS[value] })),
+    state.filter
+  );
+  const list = shown > 0 ? ui.list(KEYS.tasks, shown, "single") : ui.text(KEYS.tasksEmpty, FILTER_EMPTY[state.filter], { size: "sm", color: "text_muted", wrap: "wrap" });
+  return stack(KEYS.tasksPane, [tasksPaneHeader(state), filter, list], {
+    ...PANEL,
+    width: { fixed: PANE_W },
+    padding: "md"
+    // PANE_PAD
+  });
+}
+function planBody(text) {
+  const lines = text.replace(/^\s*#[ \t]+Plan[ \t]+\d+[^\n]*(\r?\n)?/i, "").split("\n");
+  const start = lines.findIndex((line) => /^##[ \t]+Status[ \t]*\r?$/i.test(line));
+  if (start !== -1) {
+    let end = lines.findIndex((line, index) => index > start && /^##[ \t]/.test(line));
+    if (end === -1) end = lines.length;
+    lines.splice(start, end - start);
+  }
+  return lines.join("\n").replace(/^(\s*\r?\n)+/, "");
+}
+function relativePath(root, file) {
+  const rel = relative(root, file);
+  return rel && !rel.startsWith("..") ? rel.split("\\").join("/") : file;
+}
+function emptyState(key, text, buttons, style) {
+  const children = [
+    ui.icon(`${key}-icon`, "tasks", "text_muted"),
+    ui.text(`${key}-text`, text, { size: "sm", color: "text_subtle", wrap: "wrap" })
+  ];
+  if (buttons.length > 0) children.push(hrow(`${key}-buttons`, buttons));
+  return ui.flex(key, children, {
+    direction: "column",
+    align: "center",
+    justify: "center",
+    style: { ...PANEL, padding: "xl", gap: "md", ...style }
+  });
+}
+function selectedTask(state) {
+  return state.selected === null ? void 0 : state.set.tasks.find((t) => t.id === state.selected);
+}
+function detailTop(state, task) {
+  const run = runOf(state, task.id);
+  const live = isLive(run);
+  const badge = statusBadge(task, run);
+  const chips = [];
+  if (run !== null && run.endedAt === null && badge.text !== STATUS_BADGES[task.status].text) {
+    chips.push(ui.badge("detail-live", badge.text, badge.tone));
+  }
+  if (task.priority) chips.push(ui.badge("detail-priority", `Priority ${task.priority}`));
+  if (task.effort) chips.push(ui.badge("detail-effort", `Effort ${task.effort}`));
+  if (task.risk) chips.push(ui.badge("detail-risk", `Risk ${task.risk}`));
+  if (task.dependsOn.length > 0) chips.push(ui.badge("detail-depends", `after ${task.dependsOn.join(", ")}`));
+  const starting = isBusy(state, busyKey.run(task.id)) || isBusy(state, busyKey.runWorktree(task.id));
+  const runControl = live ? [
+    ui.spinner("detail-running-spinner"),
+    ui.text("detail-running", `Running with ${HARNESS_NAMES[run.harness] ?? run.harness}`, {
+      size: "sm",
+      color: "info",
+      wrap: "no_wrap"
+    })
+  ] : [
+    ui.button("detail-run", ACTIONS.run, {
+      label: starting ? "Starting\u2026" : "Run",
+      icon: starting ? "loading" : "play",
+      variant: "primary",
+      enabled: starting ? "no" : "yes"
+    })
+  ];
+  const actions = hrow(
+    "detail-actions",
+    [
+      hrow("detail-buttons", [
+        ...runControl,
+        ui.button("detail-run-worktree", ACTIONS.runWorktree, {
+          label: "Run in worktree",
+          icon: "git-branch",
+          variant: "secondary",
+          enabled: live || starting ? "no" : "yes"
+        }),
+        ui.button("detail-variants", ACTIONS.variants, { label: "Compare agents", icon: "exchange", variant: "ghost" })
+      ]),
+      hrow(
+        "detail-editors",
+        [
+          iconButton("detail-edit", ACTIONS.edit, "pencil", "Edit in editor"),
+          iconButton("detail-quick-edit", ACTIONS.quickEdit, "magic", "Edit with a prompt")
+        ],
+        { gap: "xs" }
+      )
+    ],
+    { width: "fill" },
+    "between"
+  );
+  const statusRow = hrow("detail-status-row", [
+    ui.flex("detail-status-label-box", [ui.text("detail-status-label", "Status", { size: "xs", color: "text_muted" })], {
+      direction: "row",
+      align: "center",
+      style: { width: { fixed: 64 } }
+    }),
     ui.select(
       "detail-status",
       ACTIONS.setStatus,
       TASK_STATUSES.map((status) => ({ value: status, label: status })),
       task.status
-    ),
-    ui.details("detail-info", entries),
-    ui.row(
-      "detail-buttons",
-      [
-        ui.button("detail-run", ACTIONS.run, { label: "Run", icon: "play", variant: "primary", enabled: live }),
-        ui.button("detail-run-worktree", ACTIONS.runWorktree, {
-          label: "Run in worktree",
-          icon: "git-branch",
-          variant: "secondary",
-          enabled: live
-        }),
-        ui.button("detail-variants", ACTIONS.variants, {
-          label: "Compare agents",
-          icon: "exchange",
-          variant: "secondary"
-        }),
-        ui.button("detail-edit", ACTIONS.edit, { label: "Edit in editor", icon: "pencil", variant: "ghost" }),
-        ui.button("detail-quick-edit", ACTIONS.quickEdit, { label: "Quick edit", icon: "note", variant: "ghost" })
-      ],
-      { gap: "sm" }
     )
+  ]);
+  const heading = [
+    hrow("detail-eyebrow", [
+      ui.text("detail-plan-id", `Plan ${task.id}`, { size: "xs", weight: "medium", color: "text_muted", wrap: "no_wrap" }),
+      ui.text("detail-file-path", relativePath(state.set.root, task.file), {
+        size: "xs",
+        font: "mono",
+        color: "text_muted",
+        wrap: "no_wrap"
+      })
+    ]),
+    ui.text("detail-title", task.title, { size: "lg", weight: "bold", color: "text_strong", wrap: "wrap" })
   ];
-  if (task.statusNote) {
-    children.push(ui.text("detail-note", task.statusNote, { color: "warning", wrap: "wrap" }));
-  }
-  if (state.editing) {
+  if (chips.length > 0) heading.push(hrow("detail-chips", chips, { gap: "sm" }));
+  const children = [vstack("detail-heading", heading, { gap: "sm", width: "fill" }), actions, statusRow];
+  if (run !== null) {
     children.push(
-      ui.form(
-        "plan-form",
-        ACTIONS.saveEdit,
-        [{ key: "text", label: "Plan (Markdown)", type: "text", kind: "multiline", value: state.planText ?? "" }],
-        "Save"
-      ),
-      ui.button("detail-cancel-edit", ACTIONS.cancelEdit, { label: "Cancel", icon: "cancel", variant: "ghost" })
+      ui.details("detail-run-info", [
+        { label: "Agent", value: HARNESS_NAMES[run.harness] ?? run.harness },
+        { label: "Where", value: run.cwd },
+        { label: "Branch", value: run.branch ?? "\u2014" },
+        { label: "State", value: run.state },
+        { label: "Started", value: run.startedAt }
+      ])
     );
-  } else {
-    children.push(ui.scroll("detail-plan", [ui.markdown("plan-md", state.planText ?? "")]));
   }
-  return ui.column(KEYS.detail, children, { gap: "sm", width: "fill" });
+  if (task.statusNote) {
+    children.push(ui.text("detail-note", task.statusNote, { size: "sm", color: "warning", wrap: "wrap" }));
+  }
+  return stack(KEYS.detailTop, children);
 }
-function tasklistView(state) {
-  const children = [toolbar(state), summary(state)];
-  if (state.set.problems.length > 0) {
+function planPane(state) {
+  let children;
+  if (state.planText === null) {
+    children = [ui.text("detail-unreadable", "Cannot read the plan file.", { size: "sm", color: "text_muted" })];
+  } else {
+    children = [ui.markdown("plan-md", planBody(state.planText))];
+  }
+  return { key: KEYS.plan, type: "scroll", direction: "column", style: { height: "fill", padding: "xs", gap: "md" }, children };
+}
+function taskDetail(state) {
+  const task = selectedTask(state);
+  if (task === void 0) {
+    return emptyState(KEYS.detail, "Select a task to read its plan", [], { height: "fill" });
+  }
+  return stack(KEYS.detail, [detailTop(state, task), ui.divider("detail-divider"), planPane(state)], {
+    ...PANEL,
+    height: "fill",
+    padding: "lg"
+  });
+}
+function tasklistView(state, page = null) {
+  const children = [header(state, page)];
+  if (state.session.active) children.push(sessionStrip(state));
+  if (state.set.problems.length > 0) children.push(problemsPanel(state.set.problems));
+  if (state.set.dir === null) {
     children.push(
-      ui.column(
-        KEYS.problems,
-        state.set.problems.map(
-          (problem, index) => ui.text(`problem-${index}`, problem, { color: "warning", wrap: "wrap" })
-        ),
-        { gap: "xs" }
+      emptyState(
+        KEYS.empty,
+        "No plans in this folder yet. Write some with /improve or add a task.",
+        [
+          ui.button(`${KEYS.empty}-generate`, ACTIONS.generate, {
+            label: "Write plans with /improve",
+            icon: "magic",
+            variant: "secondary"
+          }),
+          ui.button(`${KEYS.empty}-new`, ACTIONS.newTask, { label: "New task", icon: "add", variant: "secondary" })
+        ],
+        { width: "fill", height: "fill" }
       )
     );
+  } else {
+    children.push(band(KEYS.body, [tasksPane(state), taskDetail(state)], { width: "fill", height: "fill", gap: "lg" }));
   }
-  children.push(
-    ui.row(
-      "body",
-      [ui.column("tasks-pane", [taskTree(state)], { width: { fixed: 420 } }), taskDetail(state)],
-      { gap: "md", height: "fill" }
-    )
+  return stack(KEYS.root, children, { width: "fill", height: "fill", padding: "lg", gap: "lg" });
+}
+function noGroupView() {
+  return stack(
+    KEYS.root,
+    [emptyState(KEYS.empty, "Open a group to see its tasks.", [], { width: "fill", height: "fill" })],
+    { width: "fill", height: "fill", padding: "lg", gap: "lg" }
   );
-  return ui.column(KEYS.root, children, { gap: "md", padding: "md" });
+}
+function viewShape(state) {
+  const task = selectedTask(state);
+  return [
+    state.set.dir !== null,
+    state.session.active,
+    state.set.problems.length > 0,
+    filteredTasks(state).length > 0,
+    task?.id ?? ""
+  ].join("|");
 }
 export {
   ACTIONS,
+  APP_ROW_PAD_X,
+  FILTERS,
   KEYS,
+  PANE_PAD,
+  PANE_W,
+  ROW_BODY_W,
+  ROW_GAP,
+  ROW_LEAD_W,
+  ROW_PAD,
+  ROW_STATUS_W,
+  ROW_TEXT_W,
+  TITLE_LINE_CHARS,
+  busyKey,
+  detailTop,
+  filteredTasks,
+  header,
+  noGroupView,
+  planBody,
+  planPane,
+  problemsPanel,
+  sessionStrip,
   statusBadge,
-  summary,
   taskDetail,
-  taskItems,
-  taskTree,
+  taskRow,
+  taskRows,
   tasklistView,
-  toolbar
+  tasksPane,
+  tasksPaneHeader,
+  titleLines,
+  viewShape
 };

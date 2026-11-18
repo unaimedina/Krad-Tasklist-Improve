@@ -34,6 +34,20 @@ export function taskPrompt(task: Task, planPath: string, style: ExecutionStyle):
   );
 }
 
+/**
+ * A one-line prompt that asks an agent to change one plan file as the user describes, without
+ * carrying the plan out. planPath is relative to the group folder, with forward slashes.
+ */
+export function editPlanPrompt(planPath: string, instruction: string): string {
+  return safeLine(
+    `Edit the implementation plan in ${planPath}. The change: ${instruction} ` +
+      `Read the plan fully first. Change only what the request needs and keep the plan's format: the ` +
+      `'# Plan NNN: title' heading, the ## Status section and the numbered steps. Do not carry out the plan ` +
+      `and do not change code. If the change touches the title, priority, effort or dependencies, update the ` +
+      `plan's row in plans/README.md to match, leaving its Status cell and every other row alone.`,
+  );
+}
+
 export function improvePrompt(args: string): string {
   return safeLine(`/improve ${args.trim()}`);
 }

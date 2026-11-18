@@ -20,7 +20,7 @@ starting, honor its STOP conditions, and update your row when done.
 | 002  | Read and write the improve skill's plans (`src/plans.ts`) | P1 | M | 001 | DONE |
 | 003  | Draw the Tasklist tab (`src/view.ts`) | P1 | M | 001 | DONE |
 | 004  | Launch agents on tasks and follow their state (`src/runner.ts`) | P1 | M | 001 | DONE |
-| 005  | Wire the tab, agent runs, the auto-run session and agent tools | P1 | L | 002, 003, 004 | TODO |
+| 005  | Wire the tab, agent runs, the auto-run session and agent tools | P1 | L | 002, 003, 004 | DONE |
 
 Status values: TODO | IN PROGRESS | DONE | BLOCKED (with one-line reason) | REJECTED (with one-line rationale — finding fixed independently or approach abandoned)
 

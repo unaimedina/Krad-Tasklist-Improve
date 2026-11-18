@@ -1,44 +1,1175 @@
-import type { SettingsValues } from "@krad-ade/extension";
-import { createExtension, ui } from "@krad-ade/extension";
-import type { PlanSet } from "./types.js";
+import { execFile } from "node:child_process";
+import type { FSWatcher } from "node:fs";
+import { readFileSync, watch } from "node:fs";
+import { basename, dirname, relative, resolve, sep } from "node:path";
+import { promisify } from "node:util";
+import type {
+  CallToolResult,
+  CommandTarget,
+  Context,
+  Node,
+  Patch,
+  RowsParams,
+  RowsResult,
+  SettingsValues,
+  ViewEvent,
+  ViewRef,
+} from "@krad-ade/extension";
+import { createExtension, patch } from "@krad-ade/extension";
+import { createTask, findPlansDir, loadPlanSet, runnableTasks, writeStatus } from "./plans.js";
+import type { AgentInfo, ExecutionStyle, KradCli } from "./runner.js";
+import {
+  AgentWatcher,
+  createWorktree,
+  findKrad,
+  harnessCommand,
+  editPlanPrompt,
+  improvePrompt,
+  isGitRepo,
+  taskPrompt,
+  variantsCommand,
+} from "./runner.js";
+import { hasStopped, isLive, nextLaunches, sessionOver, verdictFor } from "./scheduler.js";
+import type { Harness, PlanSet, RunMode, RunRecord, Task, TaskStatus } from "./types.js";
+import { HARNESSES, TASK_STATUSES } from "./types.js";
+import type { Filter, PageChrome, SessionInfo, TabState } from "./view.js";
+import {
+  ACTIONS,
+  busyKey,
+  detailTop,
+  FILTERS,
+  filteredTasks,
+  header,
+  KEYS,
+  noGroupView,
+  planPane,
+  problemsPanel,
+  sessionStrip,
+  taskDetail,
+  taskRows,
+  tasklistView,
+  tasksPane,
+  tasksPaneHeader,
+  viewShape,
+} from "./view.js";
 
-// Placeholder program: plans 002–005 replace this with the real task list.
-let settings: SettingsValues = {};
-let current: PlanSet | null = null;
+const run = promisify(execFile);
+
+// ---------------------------------------------------------------------------
+// Settings
+// ---------------------------------------------------------------------------
+
+interface Options {
+  harness: Harness;
+  style: ExecutionStyle;
+  extraArgs: string;
+  maxParallel: number;
+  stopOnFailure: boolean;
+  kradPath: string;
+}
+
+const DEFAULTS: Options = {
+  harness: "claude",
+  style: "direct",
+  extraArgs: "",
+  maxParallel: 1,
+  stopOnFailure: true,
+  kradPath: "krad",
+};
+
+function options(values: SettingsValues): Options {
+  const harness = values["harness"];
+  const style = values["execution-style"];
+  const extraArgs = values["extra-args"];
+  const maxParallel = values["max-parallel"];
+  const stopOnFailure = values["stop-on-failure"];
+  const kradPath = values["krad-path"];
+  return {
+    harness: HARNESSES.includes(harness as Harness) ? (harness as Harness) : DEFAULTS.harness,
+    style: style === "direct" || style === "improve" ? style : DEFAULTS.style,
+    extraArgs: typeof extraArgs === "string" ? extraArgs : DEFAULTS.extraArgs,
+    maxParallel:
+      typeof maxParallel === "number" && Number.isFinite(maxParallel)
+        ? Math.min(8, Math.max(1, Math.round(maxParallel)))
+        : DEFAULTS.maxParallel,
+    stopOnFailure: typeof stopOnFailure === "boolean" ? stopOnFailure : DEFAULTS.stopOnFailure,
+    kradPath: typeof kradPath === "string" && kradPath.trim() ? kradPath.trim() : DEFAULTS.kradPath,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Module state
+// ---------------------------------------------------------------------------
+
+interface ViewUi {
+  selected: string | null;
+  filter: Filter;
+}
+
+function newUi(): ViewUi {
+  return { selected: null, filter: "all" };
+}
+
+interface Session {
+  finished: Set<string>;
+  blockedOrReview: { id: string; why: "blocked" | "needs review" }[];
+  done: number;
+  total: number;
+  token: string;
+  /** Serialises advanceSession calls so two agent changes never launch the same task twice. */
+  chain: Promise<void>;
+}
+
+let current: Options = DEFAULTS;
+const runs: RunRecord[] = [];
+const sessions = new Map<string, Session>();
+let watcher: AgentWatcher | null = null;
+let kradCli: KradCli | null = null;
+let kradMissingWarned = false;
+/** Last seen bus state per terminal, to toast "waits for you" once per transition. */
+const lastStates = new Map<number, string>();
+
+function failure(error: unknown): string {
+  return error instanceof Error ? (error.message.split("\n")[0] ?? String(error)) : String(error);
+}
+
+function samePath(a: string, b: string): boolean {
+  const norm = (p: string) => {
+    const full = resolve(p).replace(/[\\/]+$/, "");
+    return process.platform === "win32" ? full.toLowerCase() : full;
+  };
+  return norm(a) === norm(b);
+}
+
+function isInside(path: string, folder: string): boolean {
+  const rel = relative(resolve(folder), resolve(path));
+  if (rel === "") return true;
+  if (rel.startsWith("..") || resolve(rel) === rel) return false;
+  return process.platform === "win32" ? !/^[a-zA-Z]:/.test(rel) : true;
+}
+
+/** Runs of a root, latest first. */
+function runsOf(root: string): RunRecord[] {
+  return runs.filter((r) => samePath(r.root, root)).reverse();
+}
+
+function liveRun(root: string, taskId: string): RunRecord | undefined {
+  return runs.find((r) => r.taskId === taskId && samePath(r.root, root) && isLive(r));
+}
+
+function sessionOf(root: string): Session | undefined {
+  for (const [key, session] of sessions) if (samePath(key, root)) return session;
+  return undefined;
+}
+
+function sessionInfo(root: string): SessionInfo {
+  const session = sessionOf(root);
+  const running = runsOf(root).filter(isLive).length;
+  if (!session) return { active: false, done: 0, total: 0, running, message: null };
+  return {
+    active: true,
+    done: session.done,
+    total: session.total,
+    running,
+    message: null,
+  };
+}
+
+function readText(path: string): string | null {
+  try {
+    return readFileSync(path, "utf8");
+  } catch {
+    return null;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Views: the Tasklist tab and the Tasks page share one UI and one handler
+// ---------------------------------------------------------------------------
+
+/** The Tasks page (sidebar zone, shown as a full page) and the Tasklist tab (one per group root). */
+const PAGE = "tasks";
+const TAB = "tasklist";
+
+interface OpenView {
+  ref: ViewRef;
+  /** The group it shows; for the page, resolved from the workspace. */
+  root: string | null;
+  /** The workspace groups, for the page's group select. */
+  groups: { root: string; name: string }[];
+  /** viewShape() of the last UI sent; null = not rendered yet. */
+  shape: string | null;
+  /** The plan text last sent, to leave the plan scroll alone when it did not change. */
+  planText: string | null;
+}
+
+/** Rendered views, by view id + instance. */
+const openViews = new Map<string, OpenView>();
+/** Per-view UI state, by view id + group root: the page and the tab select independently. */
+const uiStates = new Map<string, ViewUi>();
+/** The group picked in the page's group select, if any. */
+let pageChoice: string | null = null;
+
+function normPath(p: string): string {
+  const full = resolve(p).replace(/[\\/]+$/, "");
+  return process.platform === "win32" ? full.toLowerCase() : full;
+}
+
+function refId(ref: ViewRef): string {
+  return `${ref.view}\u0000${ref.instance ?? ""}`;
+}
+
+function uiOf(view: string, root: string): ViewUi {
+  const key = `${view}\u0000${normPath(root)}`;
+  let ui = uiStates.get(key);
+  if (!ui) {
+    ui = newUi();
+    uiStates.set(key, ui);
+  }
+  return ui;
+}
+
+/** The state a view renders. `withPlan` = false skips reading the selected plan file (list rows). */
+function viewState(view: string, root: string, withPlan = true): TabState {
+  const set = loadPlanSet(root);
+  const ui = uiOf(view, root);
+  const task = ui.selected === null ? undefined : set.tasks.find((t) => t.id === ui.selected);
+  return {
+    set,
+    runs: runsOf(root),
+    selected: ui.selected,
+    planText: withPlan && task ? readText(task.file) : null,
+    session: sessionInfo(root),
+    filter: ui.filter,
+    busy: [...(busy.get(normPath(root)) ?? [])],
+  };
+}
+
+/** The group the page shows: the one picked in its select, else the first with plans/, else the first. */
+async function resolvePage(context: Context): Promise<{ root: string | null; groups: OpenView["groups"] }> {
+  const groups = (await context.app.workspaceContext()).groups.map((g) => ({ root: g.root, name: g.name }));
+  const picked = pageChoice === null ? undefined : groups.find((g) => samePath(g.root, pageChoice!));
+  const withPlans = groups.find((g) => findPlansDir(g.root) !== null);
+  return { root: (picked ?? withPlans ?? groups[0])?.root ?? null, groups };
+}
+
+/** Registers a view (on render) and resolves its group. */
+async function openViewOf(ref: ViewRef, context: Context, reresolve: boolean): Promise<OpenView> {
+  const id = refId(ref);
+  let open = openViews.get(id);
+  if (!open) {
+    open = { ref: { view: ref.view, instance: ref.instance }, root: null, groups: [], shape: null, planText: null };
+    openViews.set(id, open);
+    reresolve = true;
+    if (ref.view === PAGE) Object.assign(open, await resolvePage(context));
+    else open.root = ref.instance ?? null;
+    if (open.root !== null) uiOf(ref.view, open.root).filter = "all";
+    return open;
+  }
+  if (reresolve) {
+    if (ref.view === PAGE) Object.assign(open, await resolvePage(context));
+    else open.root = ref.instance ?? null;
+  }
+  return open;
+}
+
+/** The page's extras (Open in a tab, the group select), or null for the tab. */
+function chromeOf(open: OpenView): PageChrome | null {
+  return open.ref.view === PAGE ? { groups: open.groups.map((g) => ({ value: g.root, label: g.name })) } : null;
+}
+
+/** Remembers what a view now shows, for the next refresh. */
+function remember(open: OpenView, state: TabState | null): void {
+  open.shape = state === null ? null : viewShape(state);
+  open.planText = state?.planText ?? null;
+}
+
+function build(open: OpenView): Node {
+  if (open.root === null) {
+    remember(open, null);
+    return noGroupView();
+  }
+  const state = viewState(open.ref.view, open.root);
+  remember(open, state);
+  return tasklistView(state, chromeOf(open));
+}
+
+function patchOpen(open: OpenView, context: Context, patches: Patch[]): void {
+  try {
+    context.app.patchView(open.ref, patches);
+  } catch (error) {
+    context.app.log("warn", `refresh of ${open.ref.view} failed: ${failure(error)}`);
+  }
+}
+
+/** Replaces the whole UI of one view: for structural changes (a session starts, a group switch). */
+function replaceOpen(open: OpenView, context: Context): void {
+  patchOpen(open, context, [patch.replace(build(open)), patch.invalidate(KEYS.tasks)]);
+}
+
+/**
+ * Brings one view up to date with the data. When its structure is unchanged, only the nodes that
+ * show data are patched in place (header, strips, the list's count and rows, the top of the plan
+ * pane), so nothing flashes, the list keeps its scroll, the plan keeps its scroll and an open
+ * quick editor keeps what is being typed. Otherwise the whole UI is replaced.
+ */
+function refreshOpen(open: OpenView, context: Context): void {
+  if (open.root === null || open.shape === null) return replaceOpen(open, context);
+  const state = viewState(open.ref.view, open.root);
+  if (viewShape(state) !== open.shape) return replaceOpen(open, context);
+  const patches: Patch[] = [patch.replace(header(state, chromeOf(open)))];
+  if (state.session.active) patches.push(patch.replace(sessionStrip(state)));
+  if (state.set.problems.length > 0) patches.push(patch.replace(problemsPanel(state.set.problems)));
+  if (state.set.dir !== null) {
+    patches.push(patch.replace(tasksPaneHeader(state)));
+    const shown = filteredTasks(state).length;
+    if (shown > 0) patches.push(patch.setCount(KEYS.tasks, shown), patch.invalidate(KEYS.tasks));
+  }
+  const task = state.selected === null ? undefined : state.set.tasks.find((t) => t.id === state.selected);
+  if (task !== undefined) {
+    patches.push(patch.replace(detailTop(state, task)));
+    if (state.planText !== open.planText) patches.push(patch.replace(planPane(state)));
+  }
+  open.planText = state.planText;
+  patchOpen(open, context, patches);
+}
+
+/** Refreshes every view of a group: they share the data, not the selection. */
+function refreshRoot(root: string, context: Context): void {
+  for (const open of openViews.values()) {
+    if (open.root !== null && samePath(open.root, root)) refreshOpen(open, context);
+  }
+}
+
+/** Refreshes every view; the page re-reads the workspace groups first. */
+function refreshAll(context: Context): void {
+  for (const open of openViews.values()) {
+    if (open.ref.view === PAGE) {
+      const before = open.root;
+      void openViewOf(open.ref, context, true)
+        .then(() => (before === open.root ? refreshOpen(open, context) : replaceOpen(open, context)))
+        .catch((error) => context.app.log("warn", `refresh of the Tasks page failed: ${failure(error)}`));
+    } else {
+      refreshOpen(open, context);
+    }
+  }
+}
+
+/** A new selection or editor state: replaces only the plan pane and re-asks the rows (highlight). */
+function refreshDetail(open: OpenView, context: Context): void {
+  if (open.root === null) return;
+  const state = viewState(open.ref.view, open.root);
+  if (viewShape(state).split("|").slice(0, 4).join("|") !== (open.shape ?? "").split("|").slice(0, 4).join("|")) {
+    return replaceOpen(open, context);
+  }
+  remember(open, state);
+  patchOpen(open, context, [patch.replace(taskDetail(state)), patch.invalidate(KEYS.tasks)]);
+}
+
+/** A filter switch: replaces the tasks pane (its count, its list or its empty sentence). */
+function refreshList(open: OpenView, context: Context): void {
+  if (open.root === null) return;
+  const state = viewState(open.ref.view, open.root, false);
+  if (open.shape !== null) open.shape = viewShape({ ...state, planText: open.planText });
+  patchOpen(open, context, [patch.replace(tasksPane(state)), patch.invalidate(KEYS.tasks)]);
+}
+
+// ---------------------------------------------------------------------------
+// Busy actions: an agent that is starting shows on its button until its terminal is open
+// ---------------------------------------------------------------------------
+
+const busy = new Map<string, Set<string>>();
+
+function busyOf(root: string): Set<string> {
+  const key = normPath(root);
+  let set = busy.get(key);
+  if (!set) {
+    set = new Set();
+    busy.set(key, set);
+  }
+  return set;
+}
+
+async function whileBusy<T>(root: string, key: string, context: Context, action: () => Promise<T>): Promise<T> {
+  busyOf(root).add(key);
+  refreshRoot(root, context);
+  try {
+    return await action();
+  } finally {
+    busyOf(root).delete(key);
+    refreshRoot(root, context);
+  }
+}
+
+/** Opens the Tasklist tab of a root. */
+async function openTab(root: string, context: Context): Promise<void> {
+  const existing = [...openViews.values()].find((o) => o.ref.view === TAB && o.root !== null && samePath(o.root, root));
+  const instance = existing?.ref.instance ?? root;
+  await context.app.openView({ view: TAB, instance, title: `Tasklist · ${basename(root)}` });
+}
+
+function findTask(root: string, id: string): { set: PlanSet; task: Task } | null {
+  const set = loadPlanSet(root);
+  const task = set.tasks.find((t) => t.id === id);
+  return task ? { set, task } : null;
+}
+
+/** Path of a plan file relative to a root, with "/" separators. */
+function planPathOf(root: string, file: string): string {
+  return relative(root, file).split(sep).join("/");
+}
+
+// ---------------------------------------------------------------------------
+// Command targets
+// ---------------------------------------------------------------------------
+
+async function rootFor(target: CommandTarget | null, context: Context): Promise<string | null> {
+  if (target?.kind === "group") return target.root;
+  const workspace = await context.app.workspaceContext();
+  const groups = workspace.groups;
+  const containing = (path: string): string | null => {
+    let best: string | null = null;
+    for (const group of groups) {
+      if (isInside(path, group.root) && (best === null || group.root.length > best.length)) best = group.root;
+    }
+    return best;
+  };
+  if (target?.kind === "file") {
+    // A plans folder's README.md → the folder that holds that plans folder.
+    const folder = dirname(target.path);
+    const parent = dirname(folder);
+    if (basename(target.path).toLowerCase() === "readme.md") {
+      const plans = findPlansDir(parent);
+      if (plans !== null && samePath(plans, folder)) return parent;
+    }
+    const group = containing(target.path);
+    if (group !== null) return group;
+  }
+  if (target?.kind === "folder") {
+    if (findPlansDir(target.path) !== null) return target.path;
+    const group = containing(target.path);
+    if (group !== null) return group;
+  }
+  if (groups.length === 1) return groups[0]?.root ?? null;
+  if (groups.length === 0) return null;
+  const picked = await context.app.pick({
+    title: "Which group?",
+    items: groups.map((g) => ({ value: g.root, label: g.name, detail: g.root })),
+    mode: "one",
+  });
+  return picked?.[0] ?? null;
+}
+
+// ---------------------------------------------------------------------------
+// Running tasks
+// ---------------------------------------------------------------------------
+
+async function plansDirty(root: string): Promise<boolean> {
+  try {
+    const { stdout } = await run("git", ["-C", root, "status", "--porcelain", "--", "plans"], { windowsHide: true });
+    return stdout.trim().length > 0;
+  } catch {
+    return false;
+  }
+}
+
+/** Starts one agent on a task. Returns true when a terminal was opened. */
+async function runTask(root: string, task: Task, mode: RunMode, context: Context): Promise<boolean> {
+  const { app } = context;
+  if (liveRun(root, task.id)) {
+    app.toast(`Task ${task.id} is already running`, "info");
+    return false;
+  }
+  let cwd = root;
+  let worktree: string | null = null;
+  let branch: string | null = null;
+  const previous = { status: task.status, note: task.statusNote };
+  let statusWritten = false;
+  try {
+    if (mode === "worktree") {
+      if (!(await isGitRepo(root))) {
+        app.toast("Run in a worktree needs a git repository", "error");
+        return false;
+      }
+      if (await plansDirty(root)) {
+        app.toast("Uncommitted plan edits will not be in the worktree", "info");
+      }
+      const created = await createWorktree(root, task);
+      cwd = created.path;
+      worktree = created.path;
+      branch = created.branch;
+    }
+    const planPath = planPathOf(root, task.file);
+    writeStatus(loadPlanSet(root), task.id, "IN PROGRESS", null);
+    statusWritten = true;
+    const harness = current.harness;
+    const terminal = await app.openTerminal({
+      title: `task ${task.id} · ${harness}`,
+      cwd,
+      zone: "session",
+      command: harnessCommand(harness, taskPrompt(task, planPath, current.style), current.extraArgs),
+    });
+    runs.push({
+      taskId: task.id,
+      root,
+      terminal,
+      harness,
+      mode,
+      cwd,
+      worktree,
+      branch,
+      state: "starting",
+      startedAt: new Date().toISOString(),
+      endedAt: null,
+    });
+    await ensureWatcher(context);
+    refreshRoot(root, context);
+    app.toast(`Started task ${task.id} with ${harness}`, "success");
+    return true;
+  } catch (error) {
+    app.toast(`Task ${task.id} did not start: ${failure(error)}`, "error");
+    if (statusWritten) {
+      try {
+        writeStatus(loadPlanSet(root), task.id, previous.status, previous.note);
+      } catch (restoreError) {
+        app.log("warn", `could not restore the status of ${task.id}: ${failure(restoreError)}`);
+      }
+    }
+    refreshRoot(root, context);
+    return false;
+  }
+}
+
+async function runVariants(root: string, task: Task, context: Context): Promise<void> {
+  const { app } = context;
+  const picked = await app.pick({
+    title: "Compare agents",
+    items: HARNESSES.map((h) => ({ value: h, label: h })),
+    mode: "many",
+  });
+  if (picked === null) return;
+  if (picked.length < 2 || picked.length > 4) {
+    app.toast("Pick 2 to 4 agents to compare", "warning");
+    return;
+  }
+  try {
+    const harnesses = picked.filter((h): h is Harness => HARNESSES.includes(h as Harness));
+    await app.openTerminal({
+      title: `variants · ${task.id}`,
+      cwd: root,
+      zone: "utilities",
+      command: variantsCommand(harnesses, taskPrompt(task, planPathOf(root, task.file), "direct")),
+    });
+    app.toast("Variants started — compare them in Krad's Variants view", "success");
+  } catch (error) {
+    app.toast(`Variants did not start: ${failure(error)}`, "error");
+  }
+}
+
+async function openImprove(root: string, args: string, context: Context): Promise<void> {
+  try {
+    await context.app.openTerminal({
+      title: "improve",
+      cwd: root,
+      zone: "session",
+      command: harnessCommand(current.harness, improvePrompt(args), current.extraArgs),
+    });
+  } catch (error) {
+    context.app.toast(`Could not start /improve: ${failure(error)}`, "error");
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Watcher and run ends
+// ---------------------------------------------------------------------------
+
+async function ensureWatcher(context: Context): Promise<void> {
+  if (watcher !== null) return;
+  kradCli ??= await findKrad(current.kradPath);
+  if (kradCli === null) {
+    if (!kradMissingWarned) {
+      kradMissingWarned = true;
+      context.app.toast(
+        'Cannot find the krad CLI; set "Krad CLI" in the extension settings. Task states will not update by themselves — set them in the tab.',
+        "warning",
+      );
+    }
+    return;
+  }
+  if (watcher !== null) return;
+  watcher = new AgentWatcher(
+    kradCli,
+    (agent) => onAgentChange(agent, context),
+    (message) => context.app.log("warn", message),
+  );
+  watcher.start();
+}
+
+function stopWatcherIfIdle(): void {
+  if (watcher === null) return;
+  if (runs.some(isLive) || sessions.size > 0) return;
+  watcher.stop();
+  watcher = null;
+}
+
+/** The run an agent belongs to: by terminal id, else by its title while the run is still starting. */
+function runForAgent(agent: AgentInfo): RunRecord | undefined {
+  const byTerminal = runs.find((r) => r.terminal === agent.terminal && r.endedAt === null);
+  if (byTerminal) return byTerminal;
+  if (runs.some((r) => r.terminal === agent.terminal)) return undefined;
+  const match = /^task (\d{3}) · /.exec(agent.title);
+  if (!match) return undefined;
+  const adopted = runs.find((r) => r.taskId === match[1] && r.state === "starting" && r.endedAt === null);
+  if (adopted) adopted.terminal = agent.terminal;
+  return adopted;
+}
+
+function onAgentChange(agent: AgentInfo, context: Context): void {
+  const record = runForAgent(agent);
+  if (!record) return;
+  const before = lastStates.get(agent.terminal);
+  lastStates.set(agent.terminal, agent.state);
+  record.state = agent.state;
+  if (agent.state === "waiting-for-input" && before !== "waiting-for-input") {
+    context.app.toast(
+      `Task ${record.taskId} waits for you in "task ${record.taskId} · ${record.harness}"`,
+      "warning",
+    );
+  }
+  if (!hasStopped(agent.state)) {
+    refreshRoot(record.root, context);
+    return;
+  }
+  finishRun(record, context);
+}
+
+function finishRun(record: RunRecord, context: Context): void {
+  const { app } = context;
+  const root = record.root;
+  let status: TaskStatus = "IN PROGRESS";
+  let note: string | null = null;
+  try {
+    const source = record.mode === "worktree" && record.worktree ? loadPlanSet(record.worktree) : loadPlanSet(root);
+    const task = source.tasks.find((t) => t.id === record.taskId);
+    if (task) {
+      status = task.status;
+      note = task.statusNote;
+    }
+  } catch (error) {
+    app.log("warn", `could not read the status of ${record.taskId}: ${failure(error)}`);
+  }
+  const verdict = verdictFor(status);
+  if (record.mode === "worktree" && verdict !== "needs-review") {
+    const mirrored = status === "DONE" ? [note, `in worktree ${record.branch ?? record.worktree}`].filter(Boolean).join(" — ") : note;
+    try {
+      writeStatus(loadPlanSet(root), record.taskId, status, mirrored || null);
+    } catch (error) {
+      app.log("warn", `could not mirror the status of ${record.taskId}: ${failure(error)}`);
+    }
+  }
+  if (verdict === "needs-review") {
+    app.toast(`Task ${record.taskId} stopped without updating its status — review it`, "warning");
+  }
+  record.endedAt = new Date().toISOString();
+  const session = sessionOf(root);
+  if (session) {
+    session.finished.add(record.taskId);
+    if (verdict === "done") session.done += 1;
+    else session.blockedOrReview.push({ id: record.taskId, why: verdict === "blocked" ? "blocked" : "needs review" });
+  }
+  refreshRoot(root, context);
+  void advanceSession(root, context);
+  stopWatcherIfIdle();
+}
+
+// ---------------------------------------------------------------------------
+// Auto-run session
+// ---------------------------------------------------------------------------
+
+async function startAutoRun(root: string, context: Context): Promise<void> {
+  const { app } = context;
+  if (sessionOf(root)) {
+    app.toast("An auto-run is already going in this group", "info");
+    return;
+  }
+  const set = loadPlanSet(root);
+  if (runnableTasks(set.tasks).length === 0) {
+    app.toast("Nothing to run: every TODO task waits on another one", "info");
+    return;
+  }
+  let maxParallel = current.maxParallel;
+  if (maxParallel > 1 && !(await isGitRepo(root))) {
+    const answer = await app.confirm({
+      title: "Run one at a time?",
+      detail: "Running tasks in parallel needs a git repository for the worktrees.",
+      confirm: "Run one at a time",
+      tone: "warning",
+    });
+    if (answer !== "confirmed") return;
+    maxParallel = 1;
+  }
+  const total = set.tasks.filter((t) => t.status === "TODO").length;
+  const answer = await app.confirm({
+    title: `Start an auto-run of ${total} tasks with ${current.harness}, ${maxParallel} at a time?`,
+    detail: "Agents will edit files in this group.",
+    confirm: "Start",
+    tone: "warning",
+  });
+  if (answer !== "confirmed") return;
+  const session: Session = {
+    finished: new Set(),
+    blockedOrReview: [],
+    done: 0,
+    total,
+    token: `tasklist-${root}`,
+    chain: Promise.resolve(),
+  };
+  sessions.set(root, session);
+  sessionParallel.set(session, maxParallel);
+  app.progress({ token: session.token, state: "begin", title: "Tasklist auto-run" });
+  app.setTitlebarItem({ item: "tasklist", active: true });
+  refreshRoot(root, context);
+  await advanceSession(root, context);
+}
+
+/** maxParallel chosen when the session started (1 when git was missing). */
+const sessionParallel = new WeakMap<Session, number>();
+
+function endSession(root: string, context: Context, message: string, tone: "success" | "warning" | "info"): void {
+  const session = sessionOf(root);
+  if (!session) return;
+  for (const [key, value] of sessions) if (value === session) sessions.delete(key);
+  context.app.progress({ token: session.token, state: "end" });
+  if (sessions.size === 0) context.app.setTitlebarItem({ item: "tasklist", active: false });
+  context.app.toast(message, tone);
+  refreshRoot(root, context);
+  stopWatcherIfIdle();
+}
+
+function advanceSession(root: string, context: Context): Promise<void> {
+  const session = sessionOf(root);
+  if (!session) return Promise.resolve();
+  session.chain = session.chain.then(() => advanceOnce(root, session, context)).catch((error) => {
+    context.app.log("error", `auto-run step failed: ${failure(error)}`);
+  });
+  return session.chain;
+}
+
+async function advanceOnce(root: string, session: Session, context: Context): Promise<void> {
+  if (sessionOf(root) !== session) return;
+  const failed = session.blockedOrReview[0];
+  if (current.stopOnFailure && failed) {
+    endSession(root, context, `Auto-run stopped: task ${failed.id} ${failed.why}`, "warning");
+    return;
+  }
+  const maxParallel = sessionParallel.get(session) ?? current.maxParallel;
+  const mode: RunMode = maxParallel === 1 ? "here" : "worktree";
+  const launches = nextLaunches(runnableTasks(loadPlanSet(root).tasks), runsOf(root), session.finished, maxParallel);
+  for (const task of launches) {
+    if (sessionOf(root) !== session) return;
+    const started = await runTask(root, task, mode, context);
+    if (!started) {
+      // Never retry a task that cannot start; count it as needing review.
+      session.finished.add(task.id);
+      session.blockedOrReview.push({ id: task.id, why: "needs review" });
+    }
+  }
+  if (sessionOf(root) !== session) return;
+  if (current.stopOnFailure && session.blockedOrReview[0]) {
+    const first = session.blockedOrReview[0];
+    endSession(root, context, `Auto-run stopped: task ${first.id} ${first.why}`, "warning");
+    return;
+  }
+  if (sessionOver(runnableTasks(loadPlanSet(root).tasks), runsOf(root), session.finished, maxParallel)) {
+    endSession(root, context, `Auto-run finished: ${session.done}/${session.total} tasks done`, "success");
+    return;
+  }
+  context.app.progress({ token: session.token, state: "report", message: `${session.done} of ${session.total} done` });
+  refreshRoot(root, context);
+}
+
+async function stopAutoRun(root: string, context: Context): Promise<void> {
+  if (!sessionOf(root)) {
+    context.app.toast("No auto-run is going in this group", "info");
+    return;
+  }
+  const answer = await context.app.confirm({
+    title: "Stop the auto-run?",
+    detail: "Agents already running keep working.",
+    confirm: "Stop",
+    tone: "warning",
+  });
+  if (answer !== "confirmed") return;
+  endSession(root, context, "Auto-run stopped. Agents already running keep working.", "info");
+}
+
+async function runNext(root: string, context: Context): Promise<void> {
+  const task = runnableTasks(loadPlanSet(root).tasks).find((t) => !liveRun(root, t.id));
+  if (!task) {
+    context.app.toast("Nothing to run: every TODO task waits on another one", "info");
+    return;
+  }
+  await runTask(root, task, "here", context);
+}
+
+// ---------------------------------------------------------------------------
+// View events (shared by the Tasklist tab and the Tasks page)
+// ---------------------------------------------------------------------------
+
+async function taskAction(open: OpenView, root: string, action: string, id: string, context: Context): Promise<void> {
+  const found = findTask(root, id);
+  if (!found) {
+    context.app.toast(`Task ${id} is not in the plans folder any more`, "warning");
+    refreshRoot(root, context);
+    return;
+  }
+  const { task } = found;
+  switch (action) {
+    case ACTIONS.run:
+      await whileBusy(root, busyKey.run(task.id), context, () => runTask(root, task, "here", context));
+      return;
+    case ACTIONS.runWorktree:
+      await whileBusy(root, busyKey.runWorktree(task.id), context, () => runTask(root, task, "worktree", context));
+      return;
+    case ACTIONS.variants:
+      await runVariants(root, task, context);
+      return;
+    case ACTIONS.edit:
+      await context.app.openFile({ path: task.file });
+      return;
+    case ACTIONS.quickEdit:
+      await editWithPrompt(root, task, context);
+      return;
+  }
+}
+
+async function onViewEvent(event: ViewEvent, ref: ViewRef, context: Context): Promise<void> {
+  const { app } = context;
+  const open = await openViewOf(ref, context, false);
+  const root = open.root;
+  if (root === null) return;
+  const ui = uiOf(open.ref.view, root);
+  try {
+    if (event.kind === "choose" && event.node === KEYS.tasks) {
+      ui.selected = event.items[0] ?? null;
+      refreshDetail(open, context);
+      return;
+    }
+    if (event.kind === "click") {
+      switch (event.action) {
+        case ACTIONS.newTask:
+          return await newTask(root, context, open);
+        case ACTIONS.generate:
+          return await generate(root, context);
+        case ACTIONS.reconcile:
+          return await openImprove(root, "reconcile", context);
+        case ACTIONS.refresh:
+          return refreshAll(context);
+        case ACTIONS.openTab:
+          return await openTab(root, context);
+        case ACTIONS.runNext:
+          return void (await whileBusy(root, busyKey.runNext, context, () => runNext(root, context)));
+        case ACTIONS.autoRun:
+          return await startAutoRun(root, context);
+        case ACTIONS.stop:
+          return await stopAutoRun(root, context);
+        case ACTIONS.run:
+        case ACTIONS.runWorktree:
+        case ACTIONS.variants:
+        case ACTIONS.edit:
+        case ACTIONS.quickEdit:
+          if (ui.selected !== null) await taskAction(open, root, event.action, ui.selected, context);
+          return;
+      }
+      return;
+    }
+    if (event.kind === "select" && event.action === ACTIONS.group) {
+      if (open.ref.view !== PAGE) return;
+      pageChoice = event.value;
+      await openViewOf(open.ref, context, true);
+      uiOf(open.ref.view, open.root ?? "").filter = "all";
+      return replaceOpen(open, context);
+    }
+    if (event.kind === "select" && event.action === ACTIONS.filter) {
+      if (FILTERS.includes(event.value as Filter)) ui.filter = event.value as Filter;
+      return refreshList(open, context);
+    }
+    if (event.kind === "select" && event.action === ACTIONS.setStatus) {
+      if (ui.selected === null) return;
+      const status = event.value as TaskStatus;
+      if (!TASK_STATUSES.includes(status)) return;
+      let note: string | null = null;
+      if (status === "BLOCKED" || status === "REJECTED") {
+        note = await app.input({ title: "Reason (one line)" });
+        if (note === null) return refreshRoot(root, context);
+        note = note.trim() || null;
+      }
+      writeStatus(loadPlanSet(root), ui.selected, status, note);
+      refreshAll(context);
+      return;
+    }
+  } catch (error) {
+    app.toast(failure(error), "error");
+    refreshRoot(root, context);
+  }
+}
+
+/**
+ * "Edit with a prompt": asks what should change in a plan, then opens the configured agent in a
+ * session terminal with a prompt to make that change to the plan file only. The views follow the
+ * agent's writes through a watch on the plans folder.
+ */
+async function editWithPrompt(root: string, task: Task, context: Context): Promise<void> {
+  const { app } = context;
+  const planPath = planPathOf(root, task.file);
+  const instruction = await app.input({
+    title: `Edit plan ${task.id} with ${current.harness}`,
+    placeholder: "What should change? e.g. split step 3 in two, add a test for the parser",
+  });
+  if (instruction === null || !instruction.trim()) return;
+  try {
+    await app.openTerminal({
+      title: `edit ${task.id} · ${current.harness}`,
+      cwd: root,
+      zone: "session",
+      command: harnessCommand(current.harness, editPlanPrompt(planPath, instruction), current.extraArgs),
+    });
+    watchPlans(root, context);
+    app.toast(`Editing plan ${task.id} with ${current.harness}; the plan refreshes as it changes`, "info");
+  } catch (error) {
+    app.toast(`Could not start the agent: ${failure(error)}`, "error");
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Plans folder watch: an agent editing a plan writes outside Krad's editor (no file_saved)
+// ---------------------------------------------------------------------------
+
+/** How long a plans folder is watched after the last agent was started on it. */
+const PLANS_WATCH_MS = 60 * 60 * 1000;
+const plansWatches = new Map<string, { watcher: FSWatcher; debounce: NodeJS.Timeout | null; expiry: NodeJS.Timeout }>();
+
+/** Refreshes the group's views (debounced) whenever a file in its plans folder changes, for an hour. */
+function watchPlans(root: string, context: Context): void {
+  const dir = findPlansDir(root);
+  if (dir === null) return;
+  const key = normPath(root);
+  const existing = plansWatches.get(key);
+  if (existing) {
+    existing.expiry.refresh();
+    return;
+  }
+  try {
+    const entry = {
+      watcher: watch(dir, () => {
+        if (entry.debounce) clearTimeout(entry.debounce);
+        entry.debounce = setTimeout(() => {
+          entry.debounce = null;
+          refreshRoot(root, context);
+        }, 300);
+      }),
+      debounce: null as NodeJS.Timeout | null,
+      expiry: setTimeout(() => unwatchPlans(key), PLANS_WATCH_MS),
+    };
+    entry.watcher.on("error", () => unwatchPlans(key));
+    plansWatches.set(key, entry);
+  } catch (error) {
+    context.app.log("warn", `cannot watch ${dir}: ${failure(error)}`);
+  }
+}
+
+function unwatchPlans(key: string): void {
+  const entry = plansWatches.get(key);
+  if (!entry) return;
+  plansWatches.delete(key);
+  if (entry.debounce) clearTimeout(entry.debounce);
+  clearTimeout(entry.expiry);
+  entry.watcher.close();
+}
+
+/** Writes an empty plan; selects it in the view it was asked from, if any. */
+async function newTask(root: string, context: Context, open: OpenView | null = null): Promise<void> {
+  const title = await context.app.input({
+    title: "New task",
+    placeholder: "What should be true when it is done?",
+  });
+  if (title === null || !title.trim()) return;
+  const file = createTask(root, title);
+  if (open !== null) {
+    const ui = uiOf(open.ref.view, root);
+    ui.selected = basename(file).slice(0, 3);
+  }
+  refreshRoot(root, context);
+  await context.app.openFile({ path: file });
+}
+
+async function generate(root: string, context: Context): Promise<void> {
+  const answer = await context.app.input({
+    title: "Ask /improve",
+    value: "",
+    placeholder: "empty = full audit; or: plan <what to build>, quick, security, next ...",
+  });
+  if (answer === null) return;
+  await openImprove(root, answer, context);
+}
+
+// ---------------------------------------------------------------------------
+// Agent tools
+// ---------------------------------------------------------------------------
+
+function failed(text: string): CallToolResult {
+  return { content: [{ type: "text", text }], outcome: "failed" };
+}
+
+async function toolRoot(root: string | null, context: Context): Promise<string | null> {
+  if (root) return root;
+  const workspace = await context.app.workspaceContext();
+  return workspace.groups[0]?.root ?? null;
+}
+
+async function listTool(_args: unknown, root: string | null, context: Context): Promise<string | CallToolResult> {
+  const where = await toolRoot(root, context);
+  if (where === null) return failed("No group is open.");
+  const set = loadPlanSet(where);
+  if (set.dir === null) return `No plans folder in ${where}.`;
+  const lines = [`plans: ${set.dir}`];
+  for (const task of set.tasks) {
+    const deps = task.dependsOn.length > 0 ? task.dependsOn.join(", ") : "-";
+    const status = task.statusNote ? `${task.status} — ${task.statusNote}` : task.status;
+    lines.push(`${task.id}\t${status}\t${task.title}\tafter: ${deps}\t${planPathOf(where, task.file)}`);
+  }
+  return lines.join("\n");
+}
+
+async function setStatusTool(args: unknown, root: string | null, context: Context): Promise<string | CallToolResult> {
+  const where = await toolRoot(root, context);
+  if (where === null) return failed("No group is open.");
+  const input = (args && typeof args === "object" ? args : {}) as Record<string, unknown>;
+  const id = input["id"];
+  const status = input["status"];
+  const note = input["note"];
+  if (typeof id !== "string" || !/^\d{3}$/.test(id)) return failed("id must be a three-digit plan id, e.g. 003.");
+  if (typeof status !== "string" || !TASK_STATUSES.includes(status as TaskStatus)) {
+    return failed(`status must be one of ${TASK_STATUSES.join(", ")}.`);
+  }
+  const set = loadPlanSet(where);
+  if (set.dir === null) return failed(`No plans folder in ${where}.`);
+  if (!set.tasks.some((t) => t.id === id)) return failed(`No task ${id} in ${set.dir}.`);
+  const line = typeof note === "string" ? note.replace(/[\r\n]+/g, " ").trim() || null : null;
+  writeStatus(set, id, status as TaskStatus, line);
+  refreshAll(context);
+  return `Task ${id} is now ${status}.`;
+}
+
+// ---------------------------------------------------------------------------
+// List rows
+// ---------------------------------------------------------------------------
+
+const NO_ROWS: RowsResult = { kind: "list", rows: [] };
+
+async function listRows(params: RowsParams, context: Context): Promise<RowsResult> {
+  if (params.node !== KEYS.tasks) return NO_ROWS;
+  const open = await openViewOf(params, context, false);
+  if (open.root === null) return NO_ROWS;
+  return { kind: "list", rows: taskRows(viewState(open.ref.view, open.root, false), params.start, params.end) };
+}
+
+function closeView(ref: ViewRef): void {
+  const open = openViews.get(refId(ref));
+  openViews.delete(refId(ref));
+  // A closed tab forgets its selection; the page keeps it for next time.
+  if (open && open.ref.view === TAB && open.root !== null) uiStates.delete(`${TAB}\u0000${normPath(open.root)}`);
+}
+
+/** The Tasks page and the Tasklist tab: one UI, one handler, state per view. */
+const sharedView = {
+  async render(view: ViewRef, context: Context): Promise<Node> {
+    return build(await openViewOf(view, context, true));
+  },
+  rows(params: RowsParams, context: Context): Promise<RowsResult> {
+    return listRows(params, context);
+  },
+  onEvent(event: ViewEvent, view: ViewRef, context: Context): Promise<void> {
+    return onViewEvent(event, view, context);
+  },
+  onClose(view: ViewRef): void {
+    closeView(view);
+  },
+};
+
+// ---------------------------------------------------------------------------
+// Extension
+// ---------------------------------------------------------------------------
+
+async function withRoot(
+  target: CommandTarget | null,
+  context: Context,
+  action: (root: string) => Promise<unknown> | unknown,
+): Promise<void> {
+  const root = await rootFor(target, context);
+  if (root === null) {
+    context.app.toast("Open a group first.", "info");
+    return;
+  }
+  await action(root);
+}
 
 createExtension({
   async onInitialize(context) {
-    settings = await context.app.getSettings();
+    current = options(await context.app.getSettings());
   },
 
-  onSettingsChanged(values) {
-    settings = values;
+  onShutdown() {
+    watcher?.stop();
+    watcher = null;
+    for (const key of [...plansWatches.keys()]) unwatchPlans(key);
+  },
+
+  onSettingsChanged(values, context) {
+    const before = current.kradPath;
+    current = options(values);
+    if (current.kradPath !== before) {
+      kradCli = null;
+      kradMissingWarned = false;
+    }
+    refreshAll(context);
+  },
+
+  onWorkspaceEvent(event, context) {
+    if (event.kind !== "file_saved") return;
+    // A new plans/ folder may change the group the page shows: re-resolve it.
+    const inPlans = /[\\/]plans[\\/]/i.test(event.path);
+    for (const open of openViews.values()) {
+      if (open.ref.view === PAGE && inPlans) {
+        void openViewOf(open.ref, context, true)
+          .then(() => replaceOpen(open, context))
+          .catch((error) => context.app.log("warn", `refresh of the Tasks page failed: ${failure(error)}`));
+        continue;
+      }
+      const dir = open.root === null ? null : findPlansDir(open.root);
+      if (dir !== null && isInside(event.path, dir)) refreshOpen(open, context);
+    }
   },
 
   commands: {
-    "tasklist.open": async (target, context) => {
-      let root: string | undefined;
-      if (target?.kind === "group") {
-        root = target.root;
-      } else {
-        const workspace = await context.app.workspaceContext();
-        root = workspace.groups[0]?.root;
-      }
-      if (!root) {
-        context.app.toast("Open a group first.");
-        return;
-      }
-      await context.app.openView({ view: "tasklist", instance: root, title: "Tasklist" });
-    },
+    "tasklist.open": (target, context) => withRoot(target, context, (root) => openTab(root, context)),
+    "tasklist.refresh": (_target, context) => refreshAll(context),
+    "tasklist.new-task": (target, context) => withRoot(target, context, (root) => newTask(root, context)),
+    "tasklist.generate": (target, context) => withRoot(target, context, (root) => generate(root, context)),
+    "tasklist.reconcile": (target, context) =>
+      withRoot(target, context, (root) => openImprove(root, "reconcile", context)),
+    "tasklist.run-next": (target, context) => withRoot(target, context, (root) => runNext(root, context)),
+    "tasklist.auto-run": (target, context) => withRoot(target, context, (root) => startAutoRun(root, context)),
+    "tasklist.stop": (target, context) => withRoot(target, context, (root) => stopAutoRun(root, context)),
   },
 
   views: {
-    tasklist: {
-      render() {
-        void settings;
-        void current;
-        return ui.column("root", [ui.text("placeholder", "Tasklist is being built.")]);
-      },
-    },
+    [PAGE]: sharedView,
+    [TAB]: sharedView,
+  },
+
+  tools: {
+    tasklist_list: listTool,
+    tasklist_set_status: setStatusTool,
   },
 });
