@@ -1026,8 +1026,10 @@ var ACTIONS = {
   // write plans with /improve
   reconcile: "reconcile",
   // /improve reconcile
-  openTab: "open-tab"
-  // sidebar: open the Tasklist tab
+  openTab: "open-tab",
+  // Tasks page: open the Tasklist tab of its group
+  group: "group"
+  // Tasks page: select change to switch group
 };
 var KEYS = {
   root: "root",
@@ -1037,11 +1039,9 @@ var KEYS = {
   body: "body",
   tasksPane: "tasks-pane",
   tasks: "tasks",
-  // the tab's task list (ui.list, rows served by rows())
+  // the task list (ui.list, rows served by rows())
   detail: "detail",
-  empty: "empty",
-  sidebarTasks: "sidebar-tasks"
-  // the sidebar's task list
+  empty: "empty"
 };
 var FILTERS = ["all", "todo", "running", "done", "blocked"];
 var FILTER_LABELS = {
@@ -1170,33 +1170,38 @@ function taskRow(state, task) {
 function taskRows(state, start = 0, end = Number.MAX_SAFE_INTEGER) {
   return filteredTasks(state).slice(start, end).map((task) => taskRow(state, task));
 }
-function header(state) {
+function header(state, page = null) {
   const runnable = hasTodo(state) ? "yes" : "no";
   const left = [
     ui.icon("header-icon", "tasks", "text_subtle"),
-    ui.text("header-title", "Tasklist", { size: "lg", weight: "bold", color: "text_strong", wrap: "no_wrap" }),
-    ui.text("header-folder", basename2(state.set.root) || state.set.root, {
-      size: "sm",
-      color: "text_muted",
-      wrap: "no_wrap"
-    })
+    ui.text("header-title", "Tasklist", { size: "lg", weight: "bold", color: "text_strong", wrap: "no_wrap" })
   ];
+  const group = page?.groups.find((g) => g.value === state.set.root);
+  if (page !== null && page.groups.length > 1 && group !== void 0) {
+    left.push(ui.select("header-group", ACTIONS.group, page.groups, group.value));
+  } else {
+    left.push(
+      ui.text("header-folder", basename2(state.set.root) || state.set.root, {
+        size: "sm",
+        color: "text_muted",
+        wrap: "no_wrap"
+      })
+    );
+  }
   if (state.set.dir !== null) {
     const { running, blocked } = counts(state);
     left.push(doneChip("header-done", state));
     if (running > 0) left.push(ui.badge("header-running", `${running} running`, "info"));
     if (blocked > 0) left.push(ui.badge("header-blocked", `${blocked} blocked`, "error"));
   }
-  const tools = hrow(
-    "header-tools",
-    [
-      iconButton("toolbar-new", ACTIONS.newTask, "add", "New task"),
-      iconButton("toolbar-generate", ACTIONS.generate, "magic", "Write plans with /improve"),
-      iconButton("toolbar-reconcile", ACTIONS.reconcile, "repeat", "Reconcile plans with /improve"),
-      iconButton("toolbar-refresh", ACTIONS.refresh, "refresh", "Refresh")
-    ],
-    { padding: "xs", gap: "xs", radius: "full", border: "border" }
-  );
+  const toolButtons = [
+    iconButton("toolbar-new", ACTIONS.newTask, "add", "New task"),
+    iconButton("toolbar-generate", ACTIONS.generate, "magic", "Write plans with /improve"),
+    iconButton("toolbar-reconcile", ACTIONS.reconcile, "repeat", "Reconcile plans with /improve"),
+    iconButton("toolbar-refresh", ACTIONS.refresh, "refresh", "Refresh")
+  ];
+  if (page !== null) toolButtons.push(iconButton("toolbar-open-tab", ACTIONS.openTab, "open-external", "Open in a tab"));
+  const tools = hrow("header-tools", toolButtons, { padding: "xs", gap: "xs", radius: "full", border: "border" });
   const right = [
     tools,
     ui.button("toolbar-run-next", ACTIONS.runNext, {
@@ -1429,8 +1434,8 @@ function taskDetail(state) {
     style: { ...PANEL, height: "fill", padding: "lg", gap: "md" }
   });
 }
-function tasklistView(state) {
-  const children = [header(state)];
+function tasklistView(state, page = null) {
+  const children = [header(state, page)];
   if (state.session.active) children.push(sessionStrip(state));
   if (state.set.problems.length > 0) children.push(problemsPanel(state.set.problems));
   if (state.set.dir === null) {
@@ -1464,73 +1469,12 @@ function tasklistView(state) {
     style: { width: "fill", height: "fill", padding: "lg", gap: "lg" }
   });
 }
-function sidebarRow(state, task) {
-  const badge = statusBadge(task, runOf(state, task.id));
-  const id = task.id;
-  const node2 = hrow(
-    id,
-    [
-      hrow(`${id}-left`, [
-        statusIcon(`${id}-icon`, task, badge),
-        ui.text(`${id}-id`, id, { size: "xs", font: "mono", color: "text_muted", wrap: "no_wrap" }),
-        ui.text(`${id}-title`, task.title, { size: "sm", color: "text_default", wrap: "no_wrap" })
-      ]),
-      ui.badge(`${id}-badge`, badge.text, badge.tone)
-    ],
-    { width: "fill", padding: "xs", gap: "md" },
-    "between"
+function noGroupView() {
+  return ui.flex(
+    KEYS.root,
+    [emptyState(KEYS.empty, "Open a group to see its tasks.", [], { width: "fill", height: "fill" })],
+    { direction: "column", align: "stretch", style: { width: "fill", height: "fill", padding: "lg", gap: "lg" } }
   );
-  return { node: node2 };
-}
-function sidebarRows(state, start = 0, end = Number.MAX_SAFE_INTEGER) {
-  return state.set.tasks.slice(start, end).map((task) => sidebarRow(state, task));
-}
-function sidebarView(state) {
-  const left = [
-    ui.text("sidebar-label", "Tasks", { size: "sm", weight: "medium", color: "text_strong", wrap: "no_wrap" })
-  ];
-  if (state !== null && state.set.dir !== null) {
-    const { done, total } = counts(state);
-    left.push(ui.badge("sidebar-done", `${done}/${total}`, total > 0 && done === total ? "success" : "neutral"));
-  }
-  const runnable = state !== null && hasTodo(state) ? "yes" : "no";
-  const head = hrow(
-    "sidebar-header",
-    [
-      hrow("sidebar-header-left", left),
-      hrow(
-        "sidebar-header-right",
-        [
-          iconButton("sidebar-open", ACTIONS.openTab, "open-external", "Open Tasklist"),
-          iconButton("sidebar-run-next", ACTIONS.runNext, "play", "Run next", runnable),
-          iconButton("sidebar-refresh", ACTIONS.refresh, "refresh", "Refresh")
-        ],
-        { gap: "xs" }
-      )
-    ],
-    { width: "fill" },
-    "between"
-  );
-  const children = [head];
-  if (state === null) {
-    children.push(ui.text("sidebar-empty", "Open a group to see its tasks.", { size: "sm", color: "text_muted", wrap: "wrap" }));
-  } else if (state.set.dir === null) {
-    children.push(
-      ui.text("sidebar-empty", "No plans in this folder yet.", { size: "sm", color: "text_muted", wrap: "wrap" }),
-      ui.button("sidebar-generate", ACTIONS.generate, {
-        label: "Write plans with /improve",
-        icon: "magic",
-        variant: "ghost"
-      })
-    );
-  } else {
-    children.push(ui.list(KEYS.sidebarTasks, state.set.tasks.length, "single"));
-  }
-  return ui.flex(KEYS.root, children, {
-    direction: "column",
-    align: "stretch",
-    style: { width: "fill", height: "fill", padding: "md", gap: "md" }
-  });
 }
 
 // src/main.ts
@@ -1559,11 +1503,10 @@ function options(values) {
     kradPath: typeof kradPath === "string" && kradPath.trim() ? kradPath.trim() : DEFAULTS.kradPath
   };
 }
-function newTab(selected = null) {
-  return { selected, editing: false, filter: "all" };
+function newUi() {
+  return { selected: null, editing: false, filter: "all" };
 }
 var current = DEFAULTS;
-var tabs = /* @__PURE__ */ new Map();
 var runs = [];
 var sessions = /* @__PURE__ */ new Map();
 var watcher = null;
@@ -1585,10 +1528,6 @@ function isInside(path, folder) {
   if (rel === "") return true;
   if (rel.startsWith("..") || resolve2(rel) === rel) return false;
   return process.platform === "win32" ? !/^[a-zA-Z]:/.test(rel) : true;
-}
-function tabKey(root) {
-  for (const key of tabs.keys()) if (samePath2(key, root)) return key;
-  return void 0;
 }
 function runsOf(root) {
   return runs.filter((r) => samePath2(r.root, root)).reverse();
@@ -1619,105 +1558,103 @@ function readText2(path) {
     return null;
   }
 }
-function tabState(root, withPlan = true) {
+var PAGE = "tasks";
+var TAB = "tasklist";
+var openViews = /* @__PURE__ */ new Map();
+var uiStates = /* @__PURE__ */ new Map();
+var pageChoice = null;
+function normPath(p) {
+  const full = resolve2(p).replace(/[\\/]+$/, "");
+  return process.platform === "win32" ? full.toLowerCase() : full;
+}
+function refId(ref) {
+  return `${ref.view}\0${ref.instance ?? ""}`;
+}
+function uiOf(view, root) {
+  const key = `${view}\0${normPath(root)}`;
+  let ui2 = uiStates.get(key);
+  if (!ui2) {
+    ui2 = newUi();
+    uiStates.set(key, ui2);
+  }
+  return ui2;
+}
+function viewState(view, root, withPlan = true) {
   const set = loadPlanSet(root);
-  const tab = tabs.get(tabKey(root) ?? root) ?? newTab();
-  const task = tab.selected === null ? void 0 : set.tasks.find((t) => t.id === tab.selected);
+  const ui2 = uiOf(view, root);
+  const task = ui2.selected === null ? void 0 : set.tasks.find((t) => t.id === ui2.selected);
   return {
     set,
     runs: runsOf(root),
-    selected: tab.selected,
-    editing: tab.editing,
+    selected: ui2.selected,
+    editing: ui2.editing,
     planText: withPlan && task ? readText2(task.file) : null,
     session: sessionInfo(root),
-    filter: tab.filter
+    filter: ui2.filter
   };
 }
-function patchTab(key, context, patches) {
+async function resolvePage(context) {
+  const groups = (await context.app.workspaceContext()).groups.map((g) => ({ root: g.root, name: g.name }));
+  const picked = pageChoice === null ? void 0 : groups.find((g) => samePath2(g.root, pageChoice));
+  const withPlans = groups.find((g) => findPlansDir(g.root) !== null);
+  return { root: (picked ?? withPlans ?? groups[0])?.root ?? null, groups };
+}
+async function openViewOf(ref, context, reresolve) {
+  const id = refId(ref);
+  let open = openViews.get(id);
+  if (!open) {
+    open = { ref: { view: ref.view, instance: ref.instance }, root: null, groups: [] };
+    openViews.set(id, open);
+    reresolve = true;
+  }
+  if (reresolve) {
+    if (ref.view === PAGE) Object.assign(open, await resolvePage(context));
+    else open.root = ref.instance ?? null;
+  }
+  return open;
+}
+function build(open) {
+  if (open.root === null) return noGroupView();
+  const page = open.ref.view === PAGE ? { groups: open.groups.map((g) => ({ value: g.root, label: g.name })) } : null;
+  return tasklistView(viewState(open.ref.view, open.root), page);
+}
+function patchOpen(open, context, patches) {
   try {
-    context.app.patchView({ view: "tasklist", instance: key }, patches(tabState(key)));
+    context.app.patchView(open.ref, patches);
   } catch (error) {
-    context.app.log("warn", `refresh of ${key} failed: ${failure(error)}`);
+    context.app.log("warn", `refresh of ${open.ref.view} failed: ${failure(error)}`);
   }
 }
-function refreshTab(root, context) {
-  const key = tabKey(root);
-  if (key !== void 0) {
-    patchTab(key, context, (state) => [patch.replace(tasklistView(state)), patch.invalidate(KEYS.tasks)]);
+function refreshOpen(open, context) {
+  patchOpen(open, context, [patch.replace(build(open)), patch.invalidate(KEYS.tasks)]);
+}
+function refreshRoot(root, context) {
+  for (const open of openViews.values()) {
+    if (open.root !== null && samePath2(open.root, root)) refreshOpen(open, context);
   }
-  if (sidebarRoot !== null && samePath2(sidebarRoot, root)) refreshSidebar(context);
-}
-function refreshDetail(key, context) {
-  patchTab(key, context, (state) => [patch.replace(taskDetail(state)), patch.invalidate(KEYS.tasks)]);
-}
-function refreshList(key, context) {
-  patchTab(key, context, (state) => [
-    patch.setCount(KEYS.tasks, filteredTasks(state).length),
-    patch.invalidate(KEYS.tasks)
-  ]);
 }
 function refreshAll(context) {
-  for (const root of tabs.keys()) refreshTab(root, context);
-  refreshSidebar(context);
-}
-var sidebarOpen = false;
-var sidebarRoot = null;
-async function sidebarGroup(context) {
-  const groups = (await context.app.workspaceContext()).groups;
-  const withPlans = groups.find((g) => findPlansDir(g.root) !== null);
-  return (withPlans ?? groups[0])?.root ?? null;
-}
-async function renderSidebar(context) {
-  sidebarRoot = await sidebarGroup(context);
-  sidebarOpen = true;
-  return sidebarView(sidebarRoot === null ? null : tabState(sidebarRoot));
-}
-function refreshSidebar(context) {
-  if (!sidebarOpen) return;
-  void renderSidebar(context).then(
-    (node2) => context.app.patchView({ view: "tasks" }, [patch.replace(node2), patch.invalidate(KEYS.sidebarTasks)])
-  ).catch((error) => context.app.log("warn", `refresh of the Tasks view failed: ${failure(error)}`));
-}
-async function openTab(root, context, selected = null) {
-  if (selected !== null) {
-    const key = tabKey(root) ?? root;
-    const tab = tabs.get(key);
-    if (tab) {
-      tab.selected = selected;
-      tab.editing = false;
+  for (const open of openViews.values()) {
+    if (open.ref.view === PAGE) {
+      void openViewOf(open.ref, context, true).then(() => refreshOpen(open, context)).catch((error) => context.app.log("warn", `refresh of the Tasks page failed: ${failure(error)}`));
     } else {
-      tabs.set(key, newTab(selected));
+      refreshOpen(open, context);
     }
   }
-  await context.app.openView({ view: "tasklist", instance: tabKey(root) ?? root, title: `Tasklist \xB7 ${basename3(root)}` });
-  if (selected !== null) refreshTab(root, context);
 }
-async function onSidebarEvent(event, context) {
-  try {
-    const root = sidebarRoot ?? await sidebarGroup(context);
-    if (event.kind === "click") {
-      switch (event.action) {
-        case ACTIONS.openTab:
-          if (root === null) return await withRoot(null, context, (r) => openTab(r, context));
-          return await openTab(root, context);
-        case ACTIONS.refresh:
-          return refreshSidebar(context);
-        case ACTIONS.runNext:
-          if (root !== null) await runNext(root, context);
-          return;
-        case ACTIONS.generate:
-          if (root !== null) await generate(root, context);
-          return;
-      }
-      return;
-    }
-    if (event.kind === "choose" && event.node === KEYS.sidebarTasks && root !== null) {
-      const id = event.items[0];
-      if (id !== void 0) await openTab(root, context, id);
-    }
-  } catch (error) {
-    context.app.toast(failure(error), "error");
-  }
+function refreshDetail(open, context) {
+  if (open.root === null) return;
+  patchOpen(open, context, [patch.replace(taskDetail(viewState(open.ref.view, open.root))), patch.invalidate(KEYS.tasks)]);
+}
+function refreshList(open, context) {
+  if (open.root === null) return;
+  const count = filteredTasks(viewState(open.ref.view, open.root, false)).length;
+  patchOpen(open, context, [patch.setCount(KEYS.tasks, count), patch.invalidate(KEYS.tasks)]);
+}
+async function openTab(root, context) {
+  const existing = [...openViews.values()].find((o) => o.ref.view === TAB && o.root !== null && samePath2(o.root, root));
+  const instance = existing?.ref.instance ?? root;
+  await context.app.openView({ view: TAB, instance, title: `Tasklist \xB7 ${basename3(root)}` });
 }
 function findTask(root, id) {
   const set = loadPlanSet(root);
@@ -1819,7 +1756,7 @@ async function runTask(root, task, mode, context) {
       endedAt: null
     });
     await ensureWatcher(context);
-    refreshTab(root, context);
+    refreshRoot(root, context);
     app.toast(`Started task ${task.id} with ${harness}`, "success");
     return true;
   } catch (error) {
@@ -1831,7 +1768,7 @@ async function runTask(root, task, mode, context) {
         app.log("warn", `could not restore the status of ${task.id}: ${failure(restoreError)}`);
       }
     }
-    refreshTab(root, context);
+    refreshRoot(root, context);
     return false;
   }
 }
@@ -1922,7 +1859,7 @@ function onAgentChange(agent, context) {
     );
   }
   if (!hasStopped(agent.state)) {
-    refreshTab(record.root, context);
+    refreshRoot(record.root, context);
     return;
   }
   finishRun(record, context);
@@ -1961,7 +1898,7 @@ function finishRun(record, context) {
     if (verdict === "done") session.done += 1;
     else session.blockedOrReview.push({ id: record.taskId, why: verdict === "blocked" ? "blocked" : "needs review" });
   }
-  refreshTab(root, context);
+  refreshRoot(root, context);
   void advanceSession(root, context);
   stopWatcherIfIdle();
 }
@@ -2007,7 +1944,7 @@ async function startAutoRun(root, context) {
   sessionParallel.set(session, maxParallel);
   app.progress({ token: session.token, state: "begin", title: "Tasklist auto-run" });
   app.setTitlebarItem({ item: "tasklist", active: true });
-  refreshTab(root, context);
+  refreshRoot(root, context);
   await advanceSession(root, context);
 }
 var sessionParallel = /* @__PURE__ */ new WeakMap();
@@ -2018,7 +1955,7 @@ function endSession(root, context, message, tone) {
   context.app.progress({ token: session.token, state: "end" });
   if (sessions.size === 0) context.app.setTitlebarItem({ item: "tasklist", active: false });
   context.app.toast(message, tone);
-  refreshTab(root, context);
+  refreshRoot(root, context);
   stopWatcherIfIdle();
 }
 function advanceSession(root, context) {
@@ -2058,7 +1995,7 @@ async function advanceOnce(root, session, context) {
     return;
   }
   context.app.progress({ token: session.token, state: "report", message: `${session.done} of ${session.total} done` });
-  refreshTab(root, context);
+  refreshRoot(root, context);
 }
 async function stopAutoRun(root, context) {
   if (!sessionOf(root)) {
@@ -2082,12 +2019,11 @@ async function runNext(root, context) {
   }
   await runTask(root, task, "here", context);
 }
-async function taskAction(root, action, id, context) {
-  const tab = tabs.get(tabKey(root) ?? root);
+async function taskAction(open, root, action, id, context) {
   const found = findTask(root, id);
   if (!found) {
     context.app.toast(`Task ${id} is not in the plans folder any more`, "warning");
-    refreshTab(root, context);
+    refreshRoot(root, context);
     return;
   }
   const { task } = found;
@@ -2104,105 +2040,110 @@ async function taskAction(root, action, id, context) {
     case ACTIONS.edit:
       await context.app.openFile({ path: task.file });
       return;
-    case ACTIONS.quickEdit:
-      if (tab) {
-        tab.selected = id;
-        tab.editing = true;
-      }
-      refreshDetail(tabKey(root) ?? root, context);
+    case ACTIONS.quickEdit: {
+      const ui2 = uiOf(open.ref.view, root);
+      ui2.selected = id;
+      ui2.editing = true;
+      refreshDetail(open, context);
       return;
+    }
   }
 }
-async function onTabEvent(event, root, context) {
-  const key = tabKey(root) ?? root;
-  let tab = tabs.get(key);
-  if (!tab) {
-    tab = newTab();
-    tabs.set(key, tab);
-  }
+async function onViewEvent(event, ref, context) {
   const { app } = context;
+  const open = await openViewOf(ref, context, false);
+  const root = open.root;
+  if (root === null) return;
+  const ui2 = uiOf(open.ref.view, root);
   try {
     if (event.kind === "choose" && event.node === KEYS.tasks) {
-      tab.selected = event.items[0] ?? null;
-      tab.editing = false;
-      refreshDetail(key, context);
+      ui2.selected = event.items[0] ?? null;
+      ui2.editing = false;
+      refreshDetail(open, context);
       return;
     }
     if (event.kind === "click") {
       switch (event.action) {
         case ACTIONS.newTask:
-          return await newTask(key, context);
+          return await newTask(root, context, open);
         case ACTIONS.generate:
-          return await generate(key, context);
+          return await generate(root, context);
         case ACTIONS.reconcile:
-          return await openImprove(key, "reconcile", context);
+          return await openImprove(root, "reconcile", context);
         case ACTIONS.refresh:
-          return refreshTab(key, context);
+          return refreshAll(context);
+        case ACTIONS.openTab:
+          return await openTab(root, context);
         case ACTIONS.runNext:
-          return await runNext(key, context);
+          return await runNext(root, context);
         case ACTIONS.autoRun:
-          return await startAutoRun(key, context);
+          return await startAutoRun(root, context);
         case ACTIONS.stop:
-          return await stopAutoRun(key, context);
+          return await stopAutoRun(root, context);
         case ACTIONS.cancelEdit:
-          tab.editing = false;
-          return refreshDetail(key, context);
+          ui2.editing = false;
+          return refreshDetail(open, context);
         case ACTIONS.run:
         case ACTIONS.runWorktree:
         case ACTIONS.variants:
         case ACTIONS.edit:
         case ACTIONS.quickEdit:
-          if (tab.selected !== null) await taskAction(key, event.action, tab.selected, context);
+          if (ui2.selected !== null) await taskAction(open, root, event.action, ui2.selected, context);
           return;
       }
       return;
     }
+    if (event.kind === "select" && event.action === ACTIONS.group) {
+      if (open.ref.view !== PAGE) return;
+      pageChoice = event.value;
+      await openViewOf(open.ref, context, true);
+      return refreshOpen(open, context);
+    }
     if (event.kind === "select" && event.action === ACTIONS.filter) {
-      if (FILTERS.includes(event.value)) tab.filter = event.value;
-      return refreshList(key, context);
+      if (FILTERS.includes(event.value)) ui2.filter = event.value;
+      return refreshList(open, context);
     }
     if (event.kind === "select" && event.action === ACTIONS.setStatus) {
-      if (tab.selected === null) return;
+      if (ui2.selected === null) return;
       const status = event.value;
       if (!TASK_STATUSES.includes(status)) return;
       let note = null;
       if (status === "BLOCKED" || status === "REJECTED") {
         note = await app.input({ title: "Reason (one line)" });
-        if (note === null) return refreshTab(key, context);
+        if (note === null) return refreshRoot(root, context);
         note = note.trim() || null;
       }
-      writeStatus(loadPlanSet(key), tab.selected, status, note);
+      writeStatus(loadPlanSet(root), ui2.selected, status, note);
       refreshAll(context);
       return;
     }
     if (event.kind === "form" && event.action === ACTIONS.saveEdit) {
-      if (tab.selected === null) return;
-      const found = findTask(key, tab.selected);
+      if (ui2.selected === null) return;
+      const found = findTask(root, ui2.selected);
       if (!found) return;
       writeFileSync2(found.task.file, String(event.values["text"] ?? ""), "utf8");
-      tab.editing = false;
-      refreshTab(key, context);
+      ui2.editing = false;
+      refreshRoot(root, context);
       app.toast(`Saved ${basename3(found.task.file)}`, "success");
     }
   } catch (error) {
     app.toast(failure(error), "error");
-    refreshTab(key, context);
+    refreshRoot(root, context);
   }
 }
-async function newTask(root, context) {
+async function newTask(root, context, open = null) {
   const title = await context.app.input({
     title: "New task",
     placeholder: "What should be true when it is done?"
   });
   if (title === null || !title.trim()) return;
   const file = createTask(root, title);
-  const id = basename3(file).slice(0, 3);
-  const tab = tabs.get(tabKey(root) ?? root);
-  if (tab) {
-    tab.selected = id;
-    tab.editing = false;
+  if (open !== null) {
+    const ui2 = uiOf(open.ref.view, root);
+    ui2.selected = basename3(file).slice(0, 3);
+    ui2.editing = false;
   }
-  refreshTab(root, context);
+  refreshRoot(root, context);
   await context.app.openFile({ path: file });
 }
 async function generate(root, context) {
@@ -2255,16 +2196,31 @@ async function setStatusTool(args, root, context) {
   return `Task ${id} is now ${status}.`;
 }
 var NO_ROWS = { kind: "list", rows: [] };
-function tabListRows(params) {
-  if (params.node !== KEYS.tasks || !params.instance) return NO_ROWS;
-  return { kind: "list", rows: taskRows(tabState(params.instance, false), params.start, params.end) };
+async function listRows(params, context) {
+  if (params.node !== KEYS.tasks) return NO_ROWS;
+  const open = await openViewOf(params, context, false);
+  if (open.root === null) return NO_ROWS;
+  return { kind: "list", rows: taskRows(viewState(open.ref.view, open.root, false), params.start, params.end) };
 }
-async function sidebarListRows(params, context) {
-  if (params.node !== KEYS.sidebarTasks) return NO_ROWS;
-  const root = sidebarRoot ?? await sidebarGroup(context);
-  if (root === null) return NO_ROWS;
-  return { kind: "list", rows: sidebarRows(tabState(root, false), params.start, params.end) };
+function closeView(ref) {
+  const open = openViews.get(refId(ref));
+  openViews.delete(refId(ref));
+  if (open && open.ref.view === TAB && open.root !== null) uiStates.delete(`${TAB}\0${normPath(open.root)}`);
 }
+var sharedView = {
+  async render(view, context) {
+    return build(await openViewOf(view, context, true));
+  },
+  rows(params, context) {
+    return listRows(params, context);
+  },
+  onEvent(event, view, context) {
+    return onViewEvent(event, view, context);
+  },
+  onClose(view) {
+    closeView(view);
+  }
+};
 async function withRoot(target, context, action) {
   const root = await rootFor(target, context);
   if (root === null) {
@@ -2292,11 +2248,15 @@ createExtension({
   },
   onWorkspaceEvent(event, context) {
     if (event.kind !== "file_saved") return;
-    for (const root of tabs.keys()) {
-      const dir = findPlansDir(root);
-      if (dir !== null && isInside(event.path, dir)) refreshTab(root, context);
+    const inPlans = /[\\/]plans[\\/]/i.test(event.path);
+    for (const open of openViews.values()) {
+      if (open.ref.view === PAGE && inPlans) {
+        void openViewOf(open.ref, context, true).then(() => refreshOpen(open, context)).catch((error) => context.app.log("warn", `refresh of the Tasks page failed: ${failure(error)}`));
+        continue;
+      }
+      const dir = open.root === null ? null : findPlansDir(open.root);
+      if (dir !== null && isInside(event.path, dir)) refreshOpen(open, context);
     }
-    if (/[\\/]plans[\\/]/i.test(event.path)) refreshSidebar(context);
   },
   commands: {
     "tasklist.open": (target, context) => withRoot(target, context, (root) => openTab(root, context)),
@@ -2309,38 +2269,8 @@ createExtension({
     "tasklist.stop": (target, context) => withRoot(target, context, (root) => stopAutoRun(root, context))
   },
   views: {
-    tasks: {
-      render(_view, context) {
-        return renderSidebar(context);
-      },
-      rows(params, context) {
-        return sidebarListRows(params, context);
-      },
-      onEvent(event, _view, context) {
-        return onSidebarEvent(event, context);
-      },
-      onClose() {
-        sidebarOpen = false;
-      }
-    },
-    tasklist: {
-      render(view) {
-        const root = view.instance ?? "";
-        if (tabKey(root) === void 0) tabs.set(root, newTab());
-        return tasklistView(tabState(root));
-      },
-      rows(params) {
-        return tabListRows(params);
-      },
-      onEvent(event, view, context) {
-        if (!view.instance) return;
-        return onTabEvent(event, view.instance, context);
-      },
-      onClose(view) {
-        const key = view.instance ? tabKey(view.instance) : void 0;
-        if (key !== void 0) tabs.delete(key);
-      }
-    }
+    [PAGE]: sharedView,
+    [TAB]: sharedView
   },
   tools: {
     tasklist_list: listTool,

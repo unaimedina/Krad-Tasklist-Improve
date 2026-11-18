@@ -1,5 +1,5 @@
 import { basename, relative } from "node:path";
-import type { Badge, ColorToken, Icon, ListRow, Node, Style, Tone } from "@krad-ade/extension";
+import type { Badge, Choice, ColorToken, Icon, ListRow, Node, Style, Tone } from "@krad-ade/extension";
 import { ui } from "@krad-ade/extension";
 import type { Harness, PlanSet, RunRecord, Task, TaskStatus } from "./types.js";
 import { TASK_STATUSES } from "./types.js";
@@ -22,7 +22,8 @@ export const ACTIONS = {
   stop: "stop",
   generate: "generate",        // write plans with /improve
   reconcile: "reconcile",      // /improve reconcile
-  openTab: "open-tab",         // sidebar: open the Tasklist tab
+  openTab: "open-tab",         // Tasks page: open the Tasklist tab of its group
+  group: "group",              // Tasks page: select change to switch group
 } as const;
 
 /** Keys of the views' main nodes. */
@@ -33,10 +34,9 @@ export const KEYS = {
   problems: "problems",
   body: "body",
   tasksPane: "tasks-pane",
-  tasks: "tasks",              // the tab's task list (ui.list, rows served by rows())
+  tasks: "tasks",              // the task list (ui.list, rows served by rows())
   detail: "detail",
   empty: "empty",
-  sidebarTasks: "sidebar-tasks", // the sidebar's task list
 } as const;
 
 export const FILTERS = ["all", "todo", "running", "done", "blocked"] as const;
@@ -228,33 +228,46 @@ export function taskRows(state: TabState, start = 0, end = Number.MAX_SAFE_INTEG
 // Tab
 // ---------------------------------------------------------------------------
 
-export function header(state: TabState): Node {
+/**
+ * What the Tasks page adds to the tab's UI: an "Open in a tab" button and, with several groups,
+ * a select to switch group. `null` = the Tasklist tab.
+ */
+export interface PageChrome {
+  groups: Choice[]; // value = group root, label = group name
+}
+
+export function header(state: TabState, page: PageChrome | null = null): Node {
   const runnable = hasTodo(state) ? "yes" : "no";
   const left: Node[] = [
     ui.icon("header-icon", "tasks", "text_subtle"),
     ui.text("header-title", "Tasklist", { size: "lg", weight: "bold", color: "text_strong", wrap: "no_wrap" }),
-    ui.text("header-folder", basename(state.set.root) || state.set.root, {
-      size: "sm",
-      color: "text_muted",
-      wrap: "no_wrap",
-    }),
   ];
+  const group = page?.groups.find((g) => g.value === state.set.root);
+  if (page !== null && page.groups.length > 1 && group !== undefined) {
+    left.push(ui.select("header-group", ACTIONS.group, page.groups, group.value));
+  } else {
+    left.push(
+      ui.text("header-folder", basename(state.set.root) || state.set.root, {
+        size: "sm",
+        color: "text_muted",
+        wrap: "no_wrap",
+      }),
+    );
+  }
   if (state.set.dir !== null) {
     const { running, blocked } = counts(state);
     left.push(doneChip("header-done", state));
     if (running > 0) left.push(ui.badge("header-running", `${running} running`, "info"));
     if (blocked > 0) left.push(ui.badge("header-blocked", `${blocked} blocked`, "error"));
   }
-  const tools = hrow(
-    "header-tools",
-    [
-      iconButton("toolbar-new", ACTIONS.newTask, "add", "New task"),
-      iconButton("toolbar-generate", ACTIONS.generate, "magic", "Write plans with /improve"),
-      iconButton("toolbar-reconcile", ACTIONS.reconcile, "repeat", "Reconcile plans with /improve"),
-      iconButton("toolbar-refresh", ACTIONS.refresh, "refresh", "Refresh"),
-    ],
-    { padding: "xs", gap: "xs", radius: "full", border: "border" },
-  );
+  const toolButtons = [
+    iconButton("toolbar-new", ACTIONS.newTask, "add", "New task"),
+    iconButton("toolbar-generate", ACTIONS.generate, "magic", "Write plans with /improve"),
+    iconButton("toolbar-reconcile", ACTIONS.reconcile, "repeat", "Reconcile plans with /improve"),
+    iconButton("toolbar-refresh", ACTIONS.refresh, "refresh", "Refresh"),
+  ];
+  if (page !== null) toolButtons.push(iconButton("toolbar-open-tab", ACTIONS.openTab, "open-external", "Open in a tab"));
+  const tools = hrow("header-tools", toolButtons, { padding: "xs", gap: "xs", radius: "full", border: "border" });
   const right: Node[] = [
     tools,
     ui.button("toolbar-run-next", ACTIONS.runNext, {
@@ -516,8 +529,9 @@ export function taskDetail(state: TabState): Node {
   });
 }
 
-export function tasklistView(state: TabState): Node {
-  const children: Node[] = [header(state)];
+/** The whole Tasklist UI, shared by the Tasklist tab (`page` null) and the Tasks page. */
+export function tasklistView(state: TabState, page: PageChrome | null = null): Node {
+  const children: Node[] = [header(state, page)];
   if (state.session.active) children.push(sessionStrip(state));
   if (state.set.problems.length > 0) children.push(problemsPanel(state.set.problems));
   if (state.set.dir === null) {
@@ -552,82 +566,11 @@ export function tasklistView(state: TabState): Node {
   });
 }
 
-// ---------------------------------------------------------------------------
-// Sidebar
-// ---------------------------------------------------------------------------
-
-/** One row of the sidebar's task list: key = task id, one line, the badge at the far right. */
-export function sidebarRow(state: TabState, task: Task): ListRow {
-  const badge = statusBadge(task, runOf(state, task.id));
-  const id = task.id;
-  const node = hrow(
-    id,
-    [
-      hrow(`${id}-left`, [
-        statusIcon(`${id}-icon`, task, badge),
-        ui.text(`${id}-id`, id, { size: "xs", font: "mono", color: "text_muted", wrap: "no_wrap" }),
-        ui.text(`${id}-title`, task.title, { size: "sm", color: "text_default", wrap: "no_wrap" }),
-      ]),
-      ui.badge(`${id}-badge`, badge.text, badge.tone),
-    ],
-    { width: "fill", padding: "xs", gap: "md" },
-    "between",
+/** A page with no group to show (the Tasks page when the workspace has no group). */
+export function noGroupView(): Node {
+  return ui.flex(
+    KEYS.root,
+    [emptyState(KEYS.empty, "Open a group to see its tasks.", [], { width: "fill", height: "fill" })],
+    { direction: "column", align: "stretch", style: { width: "fill", height: "fill", padding: "lg", gap: "lg" } },
   );
-  return { node };
-}
-
-export function sidebarRows(state: TabState, start = 0, end = Number.MAX_SAFE_INTEGER): ListRow[] {
-  return state.set.tasks.slice(start, end).map((task) => sidebarRow(state, task));
-}
-
-/**
- * The "Tasks" sidebar view: a compact list and an entry point to the Tasklist tab.
- * `state` is null when no group is open.
- */
-export function sidebarView(state: TabState | null): Node {
-  const left: Node[] = [
-    ui.text("sidebar-label", "Tasks", { size: "sm", weight: "medium", color: "text_strong", wrap: "no_wrap" }),
-  ];
-  if (state !== null && state.set.dir !== null) {
-    const { done, total } = counts(state);
-    left.push(ui.badge("sidebar-done", `${done}/${total}`, total > 0 && done === total ? "success" : "neutral"));
-  }
-  const runnable = state !== null && hasTodo(state) ? "yes" : "no";
-  const head = hrow(
-    "sidebar-header",
-    [
-      hrow("sidebar-header-left", left),
-      hrow(
-        "sidebar-header-right",
-        [
-          iconButton("sidebar-open", ACTIONS.openTab, "open-external", "Open Tasklist"),
-          iconButton("sidebar-run-next", ACTIONS.runNext, "play", "Run next", runnable),
-          iconButton("sidebar-refresh", ACTIONS.refresh, "refresh", "Refresh"),
-        ],
-        { gap: "xs" },
-      ),
-    ],
-    { width: "fill" },
-    "between",
-  );
-  const children: Node[] = [head];
-  if (state === null) {
-    children.push(ui.text("sidebar-empty", "Open a group to see its tasks.", { size: "sm", color: "text_muted", wrap: "wrap" }));
-  } else if (state.set.dir === null) {
-    children.push(
-      ui.text("sidebar-empty", "No plans in this folder yet.", { size: "sm", color: "text_muted", wrap: "wrap" }),
-      ui.button("sidebar-generate", ACTIONS.generate, {
-        label: "Write plans with /improve",
-        icon: "magic",
-        variant: "ghost",
-      }),
-    );
-  } else {
-    children.push(ui.list(KEYS.sidebarTasks, state.set.tasks.length, "single"));
-  }
-  return ui.flex(KEYS.root, children, {
-    direction: "column",
-    align: "stretch",
-    style: { width: "fill", height: "fill", padding: "md", gap: "md" },
-  });
 }

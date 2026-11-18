@@ -22,15 +22,19 @@ The extension activates in groups that contain `plans/README.md`. Open it with *
 
 ## Use
 
-- **Open the tab**: **Open Tasklist** in the **Tasks** sidebar view (which also lists the tasks;
-  click one to open the tab on it), the **Tasklist** titlebar button, the **Tasklist: Open** command, the group's
-  context menu (or the context menu of `plans/README.md`), or `Ctrl+Alt+Shift+T`. One tab per group.
+- **The Tasks page**: **Tasks** in the left nav shows the full Tasklist for the group whose
+  folder has `plans/` (a select switches group when there are several). It selects tasks on its
+  own; **Open in a tab** opens the same group's tab.
+- **Open the tab**: **Open in a tab** on the Tasks page, the **Tasklist** titlebar button, the
+  **Tasklist: Open** command, the group's context menu (or the context menu of
+  `plans/README.md`), or `Ctrl+Alt+Shift+T`. One tab per group; the page and the tab show the same
+  data and refresh together.
 - **Write plans with `/improve`**: **Write plans with /improve** (the magic button) opens the chosen agent with `/improve <what you
   typed>` (empty = full audit; or `plan <what to build>`, `quick`, `security`, `next` ...).
   **Reconcile** runs `/improve reconcile` to check the plans against the code. Both need the
   improve skill installed for that agent: <https://github.com/shadcn/improve>. **New task** writes
   an empty plan by hand and adds a TODO row.
-- **Read and edit**: click a task in the list to read its plan (the **TASKS** filter narrows the
+- **Read and edit**: click a task in the list to read its plan (the **Tasks** filter narrows the
   list to To do, Running, Done or Blocked; the task's pane has Run, Run in worktree, Compare agents
   and the editors). **Edit in editor** opens the file in Krad's
   editor; **Quick edit** edits the Markdown in the tab. The status select writes

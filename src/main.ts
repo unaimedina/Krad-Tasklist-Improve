@@ -2,7 +2,18 @@ import { execFile } from "node:child_process";
 import { readFileSync, writeFileSync } from "node:fs";
 import { basename, dirname, relative, resolve, sep } from "node:path";
 import { promisify } from "node:util";
-import type { CallToolResult, CommandTarget, Context, Patch, RowsParams, RowsResult, SettingsValues, ViewEvent } from "@krad-ade/extension";
+import type {
+  CallToolResult,
+  CommandTarget,
+  Context,
+  Node,
+  Patch,
+  RowsParams,
+  RowsResult,
+  SettingsValues,
+  ViewEvent,
+  ViewRef,
+} from "@krad-ade/extension";
 import { createExtension, patch } from "@krad-ade/extension";
 import { createTask, findPlansDir, loadPlanSet, runnableTasks, writeStatus } from "./plans.js";
 import type { AgentInfo, ExecutionStyle, KradCli } from "./runner.js";
@@ -19,14 +30,13 @@ import {
 import { hasStopped, isLive, nextLaunches, sessionOver, verdictFor } from "./scheduler.js";
 import type { Harness, PlanSet, RunMode, RunRecord, Task, TaskStatus } from "./types.js";
 import { HARNESSES, TASK_STATUSES } from "./types.js";
-import type { Filter, SessionInfo, TabState } from "./view.js";
+import type { Filter, PageChrome, SessionInfo, TabState } from "./view.js";
 import {
   ACTIONS,
   FILTERS,
   filteredTasks,
   KEYS,
-  sidebarRows,
-  sidebarView,
+  noGroupView,
   taskDetail,
   taskRows,
   tasklistView,
@@ -80,14 +90,14 @@ function options(values: SettingsValues): Options {
 // Module state
 // ---------------------------------------------------------------------------
 
-interface TabInfo {
+interface ViewUi {
   selected: string | null;
   editing: boolean;
   filter: Filter;
 }
 
-function newTab(selected: string | null = null): TabInfo {
-  return { selected, editing: false, filter: "all" };
+function newUi(): ViewUi {
+  return { selected: null, editing: false, filter: "all" };
 }
 
 interface Session {
@@ -101,7 +111,6 @@ interface Session {
 }
 
 let current: Options = DEFAULTS;
-const tabs = new Map<string, TabInfo>();
 const runs: RunRecord[] = [];
 const sessions = new Map<string, Session>();
 let watcher: AgentWatcher | null = null;
@@ -127,11 +136,6 @@ function isInside(path: string, folder: string): boolean {
   if (rel === "") return true;
   if (rel.startsWith("..") || resolve(rel) === rel) return false;
   return process.platform === "win32" ? !/^[a-zA-Z]:/.test(rel) : true;
-}
-
-function tabKey(root: string): string | undefined {
-  for (const key of tabs.keys()) if (samePath(key, root)) return key;
-  return undefined;
 }
 
 /** Runs of a root, latest first. */
@@ -169,129 +173,146 @@ function readText(path: string): string | null {
   }
 }
 
-/** The state a view of a root renders. `withPlan` = false skips reading the selected plan file (list rows). */
-function tabState(root: string, withPlan = true): TabState {
+// ---------------------------------------------------------------------------
+// Views: the Tasklist tab and the Tasks page share one UI and one handler
+// ---------------------------------------------------------------------------
+
+/** The Tasks page (sidebar zone, shown as a full page) and the Tasklist tab (one per group root). */
+const PAGE = "tasks";
+const TAB = "tasklist";
+
+interface OpenView {
+  ref: ViewRef;
+  /** The group it shows; for the page, resolved from the workspace. */
+  root: string | null;
+  /** The workspace groups, for the page's group select. */
+  groups: { root: string; name: string }[];
+}
+
+/** Rendered views, by view id + instance. */
+const openViews = new Map<string, OpenView>();
+/** Per-view UI state, by view id + group root: the page and the tab select independently. */
+const uiStates = new Map<string, ViewUi>();
+/** The group picked in the page's group select, if any. */
+let pageChoice: string | null = null;
+
+function normPath(p: string): string {
+  const full = resolve(p).replace(/[\\/]+$/, "");
+  return process.platform === "win32" ? full.toLowerCase() : full;
+}
+
+function refId(ref: ViewRef): string {
+  return `${ref.view}\u0000${ref.instance ?? ""}`;
+}
+
+function uiOf(view: string, root: string): ViewUi {
+  const key = `${view}\u0000${normPath(root)}`;
+  let ui = uiStates.get(key);
+  if (!ui) {
+    ui = newUi();
+    uiStates.set(key, ui);
+  }
+  return ui;
+}
+
+/** The state a view renders. `withPlan` = false skips reading the selected plan file (list rows). */
+function viewState(view: string, root: string, withPlan = true): TabState {
   const set = loadPlanSet(root);
-  const tab = tabs.get(tabKey(root) ?? root) ?? newTab();
-  const task = tab.selected === null ? undefined : set.tasks.find((t) => t.id === tab.selected);
+  const ui = uiOf(view, root);
+  const task = ui.selected === null ? undefined : set.tasks.find((t) => t.id === ui.selected);
   return {
     set,
     runs: runsOf(root),
-    selected: tab.selected,
-    editing: tab.editing,
+    selected: ui.selected,
+    editing: ui.editing,
     planText: withPlan && task ? readText(task.file) : null,
     session: sessionInfo(root),
-    filter: tab.filter,
+    filter: ui.filter,
   };
 }
 
-function patchTab(key: string, context: Context, patches: (state: TabState) => Patch[]): void {
+/** The group the page shows: the one picked in its select, else the first with plans/, else the first. */
+async function resolvePage(context: Context): Promise<{ root: string | null; groups: OpenView["groups"] }> {
+  const groups = (await context.app.workspaceContext()).groups.map((g) => ({ root: g.root, name: g.name }));
+  const picked = pageChoice === null ? undefined : groups.find((g) => samePath(g.root, pageChoice!));
+  const withPlans = groups.find((g) => findPlansDir(g.root) !== null);
+  return { root: (picked ?? withPlans ?? groups[0])?.root ?? null, groups };
+}
+
+/** Registers a view (on render) and resolves its group. */
+async function openViewOf(ref: ViewRef, context: Context, reresolve: boolean): Promise<OpenView> {
+  const id = refId(ref);
+  let open = openViews.get(id);
+  if (!open) {
+    open = { ref: { view: ref.view, instance: ref.instance }, root: null, groups: [] };
+    openViews.set(id, open);
+    reresolve = true;
+  }
+  if (reresolve) {
+    if (ref.view === PAGE) Object.assign(open, await resolvePage(context));
+    else open.root = ref.instance ?? null;
+  }
+  return open;
+}
+
+function build(open: OpenView): Node {
+  if (open.root === null) return noGroupView();
+  const page: PageChrome | null =
+    open.ref.view === PAGE ? { groups: open.groups.map((g) => ({ value: g.root, label: g.name })) } : null;
+  return tasklistView(viewState(open.ref.view, open.root), page);
+}
+
+function patchOpen(open: OpenView, context: Context, patches: Patch[]): void {
   try {
-    context.app.patchView({ view: "tasklist", instance: key }, patches(tabState(key)));
+    context.app.patchView(open.ref, patches);
   } catch (error) {
-    context.app.log("warn", `refresh of ${key} failed: ${failure(error)}`);
+    context.app.log("warn", `refresh of ${open.ref.view} failed: ${failure(error)}`);
   }
 }
 
-function refreshTab(root: string, context: Context): void {
-  const key = tabKey(root);
-  if (key !== undefined) {
-    patchTab(key, context, (state) => [patch.replace(tasklistView(state)), patch.invalidate(KEYS.tasks)]);
+/** Replaces the whole UI of one view. */
+function refreshOpen(open: OpenView, context: Context): void {
+  patchOpen(open, context, [patch.replace(build(open)), patch.invalidate(KEYS.tasks)]);
+}
+
+/** Refreshes every view of a group: they share the data, not the selection. */
+function refreshRoot(root: string, context: Context): void {
+  for (const open of openViews.values()) {
+    if (open.root !== null && samePath(open.root, root)) refreshOpen(open, context);
   }
-  if (sidebarRoot !== null && samePath(sidebarRoot, root)) refreshSidebar(context);
+}
+
+/** Refreshes every view; the page re-reads the workspace groups first. */
+function refreshAll(context: Context): void {
+  for (const open of openViews.values()) {
+    if (open.ref.view === PAGE) {
+      void openViewOf(open.ref, context, true)
+        .then(() => refreshOpen(open, context))
+        .catch((error) => context.app.log("warn", `refresh of the Tasks page failed: ${failure(error)}`));
+    } else {
+      refreshOpen(open, context);
+    }
+  }
 }
 
 /** Replaces only the detail pane and re-asks the list rows (selection highlight). */
-function refreshDetail(key: string, context: Context): void {
-  patchTab(key, context, (state) => [patch.replace(taskDetail(state)), patch.invalidate(KEYS.tasks)]);
+function refreshDetail(open: OpenView, context: Context): void {
+  if (open.root === null) return;
+  patchOpen(open, context, [patch.replace(taskDetail(viewState(open.ref.view, open.root))), patch.invalidate(KEYS.tasks)]);
 }
 
 /** Re-counts and re-asks the list rows after a filter change. */
-function refreshList(key: string, context: Context): void {
-  patchTab(key, context, (state) => [
-    patch.setCount(KEYS.tasks, filteredTasks(state).length),
-    patch.invalidate(KEYS.tasks),
-  ]);
+function refreshList(open: OpenView, context: Context): void {
+  if (open.root === null) return;
+  const count = filteredTasks(viewState(open.ref.view, open.root, false)).length;
+  patchOpen(open, context, [patch.setCount(KEYS.tasks, count), patch.invalidate(KEYS.tasks)]);
 }
 
-function refreshAll(context: Context): void {
-  for (const root of tabs.keys()) refreshTab(root, context);
-  refreshSidebar(context);
-}
-
-// ---------------------------------------------------------------------------
-// Tasks sidebar view
-// ---------------------------------------------------------------------------
-
-/** Whether the sidebar view has been rendered and not closed since. */
-let sidebarOpen = false;
-/** The group the sidebar view shows, from its last render. */
-let sidebarRoot: string | null = null;
-
-/** The group the sidebar shows: the first one whose folder has plans/, else the first one. */
-async function sidebarGroup(context: Context): Promise<string | null> {
-  const groups = (await context.app.workspaceContext()).groups;
-  const withPlans = groups.find((g) => findPlansDir(g.root) !== null);
-  return (withPlans ?? groups[0])?.root ?? null;
-}
-
-async function renderSidebar(context: Context): Promise<ReturnType<typeof sidebarView>> {
-  sidebarRoot = await sidebarGroup(context);
-  sidebarOpen = true;
-  return sidebarView(sidebarRoot === null ? null : tabState(sidebarRoot));
-}
-
-function refreshSidebar(context: Context): void {
-  if (!sidebarOpen) return;
-  void renderSidebar(context)
-    .then((node) =>
-      context.app.patchView({ view: "tasks" }, [patch.replace(node), patch.invalidate(KEYS.sidebarTasks)]),
-    )
-    .catch((error) => context.app.log("warn", `refresh of the Tasks view failed: ${failure(error)}`));
-}
-
-/** Opens the Tasklist tab of a root, optionally with a task selected. */
-async function openTab(root: string, context: Context, selected: string | null = null): Promise<void> {
-  if (selected !== null) {
-    const key = tabKey(root) ?? root;
-    const tab = tabs.get(key);
-    if (tab) {
-      tab.selected = selected;
-      tab.editing = false;
-    } else {
-      tabs.set(key, newTab(selected));
-    }
-  }
-  await context.app.openView({ view: "tasklist", instance: tabKey(root) ?? root, title: `Tasklist · ${basename(root)}` });
-  if (selected !== null) refreshTab(root, context);
-}
-
-async function onSidebarEvent(event: ViewEvent, context: Context): Promise<void> {
-  try {
-    const root = sidebarRoot ?? (await sidebarGroup(context));
-    if (event.kind === "click") {
-      switch (event.action) {
-        case ACTIONS.openTab:
-          if (root === null) return await withRoot(null, context, (r) => openTab(r, context));
-          return await openTab(root, context);
-        case ACTIONS.refresh:
-          return refreshSidebar(context);
-        case ACTIONS.runNext:
-          if (root !== null) await runNext(root, context);
-          return;
-        case ACTIONS.generate:
-          if (root !== null) await generate(root, context);
-          return;
-      }
-      return;
-    }
-    if (event.kind === "choose" && event.node === KEYS.sidebarTasks && root !== null) {
-      const id = event.items[0];
-      if (id !== undefined) await openTab(root, context, id);
-    }
-  } catch (error) {
-    context.app.toast(failure(error), "error");
-  }
+/** Opens the Tasklist tab of a root. */
+async function openTab(root: string, context: Context): Promise<void> {
+  const existing = [...openViews.values()].find((o) => o.ref.view === TAB && o.root !== null && samePath(o.root, root));
+  const instance = existing?.ref.instance ?? root;
+  await context.app.openView({ view: TAB, instance, title: `Tasklist · ${basename(root)}` });
 }
 
 function findTask(root: string, id: string): { set: PlanSet; task: Task } | null {
@@ -409,7 +430,7 @@ async function runTask(root: string, task: Task, mode: RunMode, context: Context
       endedAt: null,
     });
     await ensureWatcher(context);
-    refreshTab(root, context);
+    refreshRoot(root, context);
     app.toast(`Started task ${task.id} with ${harness}`, "success");
     return true;
   } catch (error) {
@@ -421,7 +442,7 @@ async function runTask(root: string, task: Task, mode: RunMode, context: Context
         app.log("warn", `could not restore the status of ${task.id}: ${failure(restoreError)}`);
       }
     }
-    refreshTab(root, context);
+    refreshRoot(root, context);
     return false;
   }
 }
@@ -523,7 +544,7 @@ function onAgentChange(agent: AgentInfo, context: Context): void {
     );
   }
   if (!hasStopped(agent.state)) {
-    refreshTab(record.root, context);
+    refreshRoot(record.root, context);
     return;
   }
   finishRun(record, context);
@@ -563,7 +584,7 @@ function finishRun(record: RunRecord, context: Context): void {
     if (verdict === "done") session.done += 1;
     else session.blockedOrReview.push({ id: record.taskId, why: verdict === "blocked" ? "blocked" : "needs review" });
   }
-  refreshTab(root, context);
+  refreshRoot(root, context);
   void advanceSession(root, context);
   stopWatcherIfIdle();
 }
@@ -614,7 +635,7 @@ async function startAutoRun(root: string, context: Context): Promise<void> {
   sessionParallel.set(session, maxParallel);
   app.progress({ token: session.token, state: "begin", title: "Tasklist auto-run" });
   app.setTitlebarItem({ item: "tasklist", active: true });
-  refreshTab(root, context);
+  refreshRoot(root, context);
   await advanceSession(root, context);
 }
 
@@ -628,7 +649,7 @@ function endSession(root: string, context: Context, message: string, tone: "succ
   context.app.progress({ token: session.token, state: "end" });
   if (sessions.size === 0) context.app.setTitlebarItem({ item: "tasklist", active: false });
   context.app.toast(message, tone);
-  refreshTab(root, context);
+  refreshRoot(root, context);
   stopWatcherIfIdle();
 }
 
@@ -671,7 +692,7 @@ async function advanceOnce(root: string, session: Session, context: Context): Pr
     return;
   }
   context.app.progress({ token: session.token, state: "report", message: `${session.done} of ${session.total} done` });
-  refreshTab(root, context);
+  refreshRoot(root, context);
 }
 
 async function stopAutoRun(root: string, context: Context): Promise<void> {
@@ -699,15 +720,14 @@ async function runNext(root: string, context: Context): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------
-// Tab events
+// View events (shared by the Tasklist tab and the Tasks page)
 // ---------------------------------------------------------------------------
 
-async function taskAction(root: string, action: string, id: string, context: Context): Promise<void> {
-  const tab = tabs.get(tabKey(root) ?? root);
+async function taskAction(open: OpenView, root: string, action: string, id: string, context: Context): Promise<void> {
   const found = findTask(root, id);
   if (!found) {
     context.app.toast(`Task ${id} is not in the plans folder any more`, "warning");
-    refreshTab(root, context);
+    refreshRoot(root, context);
     return;
   }
   const { task } = found;
@@ -724,107 +744,113 @@ async function taskAction(root: string, action: string, id: string, context: Con
     case ACTIONS.edit:
       await context.app.openFile({ path: task.file });
       return;
-    case ACTIONS.quickEdit:
-      if (tab) {
-        tab.selected = id;
-        tab.editing = true;
-      }
-      refreshDetail(tabKey(root) ?? root, context);
+    case ACTIONS.quickEdit: {
+      const ui = uiOf(open.ref.view, root);
+      ui.selected = id;
+      ui.editing = true;
+      refreshDetail(open, context);
       return;
+    }
   }
 }
 
-async function onTabEvent(event: ViewEvent, root: string, context: Context): Promise<void> {
-  const key = tabKey(root) ?? root;
-  let tab = tabs.get(key);
-  if (!tab) {
-    tab = newTab();
-    tabs.set(key, tab);
-  }
+async function onViewEvent(event: ViewEvent, ref: ViewRef, context: Context): Promise<void> {
   const { app } = context;
+  const open = await openViewOf(ref, context, false);
+  const root = open.root;
+  if (root === null) return;
+  const ui = uiOf(open.ref.view, root);
   try {
     if (event.kind === "choose" && event.node === KEYS.tasks) {
-      tab.selected = event.items[0] ?? null;
-      tab.editing = false;
-      refreshDetail(key, context);
+      ui.selected = event.items[0] ?? null;
+      ui.editing = false;
+      refreshDetail(open, context);
       return;
     }
     if (event.kind === "click") {
       switch (event.action) {
         case ACTIONS.newTask:
-          return await newTask(key, context);
+          return await newTask(root, context, open);
         case ACTIONS.generate:
-          return await generate(key, context);
+          return await generate(root, context);
         case ACTIONS.reconcile:
-          return await openImprove(key, "reconcile", context);
+          return await openImprove(root, "reconcile", context);
         case ACTIONS.refresh:
-          return refreshTab(key, context);
+          return refreshAll(context);
+        case ACTIONS.openTab:
+          return await openTab(root, context);
         case ACTIONS.runNext:
-          return await runNext(key, context);
+          return await runNext(root, context);
         case ACTIONS.autoRun:
-          return await startAutoRun(key, context);
+          return await startAutoRun(root, context);
         case ACTIONS.stop:
-          return await stopAutoRun(key, context);
+          return await stopAutoRun(root, context);
         case ACTIONS.cancelEdit:
-          tab.editing = false;
-          return refreshDetail(key, context);
+          ui.editing = false;
+          return refreshDetail(open, context);
         case ACTIONS.run:
         case ACTIONS.runWorktree:
         case ACTIONS.variants:
         case ACTIONS.edit:
         case ACTIONS.quickEdit:
-          if (tab.selected !== null) await taskAction(key, event.action, tab.selected, context);
+          if (ui.selected !== null) await taskAction(open, root, event.action, ui.selected, context);
           return;
       }
       return;
     }
+    if (event.kind === "select" && event.action === ACTIONS.group) {
+      if (open.ref.view !== PAGE) return;
+      pageChoice = event.value;
+      await openViewOf(open.ref, context, true);
+      return refreshOpen(open, context);
+    }
     if (event.kind === "select" && event.action === ACTIONS.filter) {
-      if (FILTERS.includes(event.value as Filter)) tab.filter = event.value as Filter;
-      return refreshList(key, context);
+      if (FILTERS.includes(event.value as Filter)) ui.filter = event.value as Filter;
+      return refreshList(open, context);
     }
     if (event.kind === "select" && event.action === ACTIONS.setStatus) {
-      if (tab.selected === null) return;
+      if (ui.selected === null) return;
       const status = event.value as TaskStatus;
       if (!TASK_STATUSES.includes(status)) return;
       let note: string | null = null;
       if (status === "BLOCKED" || status === "REJECTED") {
         note = await app.input({ title: "Reason (one line)" });
-        if (note === null) return refreshTab(key, context);
+        if (note === null) return refreshRoot(root, context);
         note = note.trim() || null;
       }
-      writeStatus(loadPlanSet(key), tab.selected, status, note);
+      writeStatus(loadPlanSet(root), ui.selected, status, note);
       refreshAll(context);
       return;
     }
     if (event.kind === "form" && event.action === ACTIONS.saveEdit) {
-      if (tab.selected === null) return;
-      const found = findTask(key, tab.selected);
+      if (ui.selected === null) return;
+      const found = findTask(root, ui.selected);
       if (!found) return;
       writeFileSync(found.task.file, String(event.values["text"] ?? ""), "utf8");
-      tab.editing = false;
-      refreshTab(key, context);
+      ui.editing = false;
+      refreshRoot(root, context);
       app.toast(`Saved ${basename(found.task.file)}`, "success");
     }
   } catch (error) {
     app.toast(failure(error), "error");
-    refreshTab(key, context);
+    refreshRoot(root, context);
   }
 }
 
-async function newTask(root: string, context: Context): Promise<void> {
+/** Writes an empty plan; selects it in the view it was asked from, if any. */
+async function newTask(root: string, context: Context, open: OpenView | null = null): Promise<void> {
   const title = await context.app.input({
     title: "New task",
     placeholder: "What should be true when it is done?",
   });
   if (title === null || !title.trim()) return;
   const file = createTask(root, title);
-  const id = basename(file).slice(0, 3);
-  const tab = tabs.get(tabKey(root) ?? root);
-  if (tab) {
-    tab.selected = id;
-    tab.editing = false;
+  if (open !== null) {
+    const ui = uiOf(open.ref.view, root);
+    ui.selected = basename(file).slice(0, 3);
+    ui.editing = false;
   }
-  refreshTab(root, context);
+  refreshRoot(root, context);
   await context.app.openFile({ path: file });
 }
 
@@ -892,17 +918,35 @@ async function setStatusTool(args: unknown, root: string | null, context: Contex
 
 const NO_ROWS: RowsResult = { kind: "list", rows: [] };
 
-function tabListRows(params: RowsParams): RowsResult {
-  if (params.node !== KEYS.tasks || !params.instance) return NO_ROWS;
-  return { kind: "list", rows: taskRows(tabState(params.instance, false), params.start, params.end) };
+async function listRows(params: RowsParams, context: Context): Promise<RowsResult> {
+  if (params.node !== KEYS.tasks) return NO_ROWS;
+  const open = await openViewOf(params, context, false);
+  if (open.root === null) return NO_ROWS;
+  return { kind: "list", rows: taskRows(viewState(open.ref.view, open.root, false), params.start, params.end) };
 }
 
-async function sidebarListRows(params: RowsParams, context: Context): Promise<RowsResult> {
-  if (params.node !== KEYS.sidebarTasks) return NO_ROWS;
-  const root = sidebarRoot ?? (await sidebarGroup(context));
-  if (root === null) return NO_ROWS;
-  return { kind: "list", rows: sidebarRows(tabState(root, false), params.start, params.end) };
+function closeView(ref: ViewRef): void {
+  const open = openViews.get(refId(ref));
+  openViews.delete(refId(ref));
+  // A closed tab forgets its selection; the page keeps it for next time.
+  if (open && open.ref.view === TAB && open.root !== null) uiStates.delete(`${TAB}\u0000${normPath(open.root)}`);
 }
+
+/** The Tasks page and the Tasklist tab: one UI, one handler, state per view. */
+const sharedView = {
+  async render(view: ViewRef, context: Context): Promise<Node> {
+    return build(await openViewOf(view, context, true));
+  },
+  rows(params: RowsParams, context: Context): Promise<RowsResult> {
+    return listRows(params, context);
+  },
+  onEvent(event: ViewEvent, view: ViewRef, context: Context): Promise<void> {
+    return onViewEvent(event, view, context);
+  },
+  onClose(view: ViewRef): void {
+    closeView(view);
+  },
+};
 
 // ---------------------------------------------------------------------------
 // Extension
@@ -943,12 +987,18 @@ createExtension({
 
   onWorkspaceEvent(event, context) {
     if (event.kind !== "file_saved") return;
-    for (const root of tabs.keys()) {
-      const dir = findPlansDir(root);
-      if (dir !== null && isInside(event.path, dir)) refreshTab(root, context);
+    // A new plans/ folder may change the group the page shows: re-resolve it.
+    const inPlans = /[\\/]plans[\\/]/i.test(event.path);
+    for (const open of openViews.values()) {
+      if (open.ref.view === PAGE && inPlans) {
+        void openViewOf(open.ref, context, true)
+          .then(() => refreshOpen(open, context))
+          .catch((error) => context.app.log("warn", `refresh of the Tasks page failed: ${failure(error)}`));
+        continue;
+      }
+      const dir = open.root === null ? null : findPlansDir(open.root);
+      if (dir !== null && isInside(event.path, dir)) refreshOpen(open, context);
     }
-    // The sidebar follows its group's plans, and a new plans/ folder may change its group.
-    if (/[\\/]plans[\\/]/i.test(event.path)) refreshSidebar(context);
   },
 
   commands: {
@@ -964,38 +1014,8 @@ createExtension({
   },
 
   views: {
-    tasks: {
-      render(_view, context) {
-        return renderSidebar(context);
-      },
-      rows(params, context) {
-        return sidebarListRows(params, context);
-      },
-      onEvent(event, _view, context) {
-        return onSidebarEvent(event, context);
-      },
-      onClose() {
-        sidebarOpen = false;
-      },
-    },
-    tasklist: {
-      render(view) {
-        const root = view.instance ?? "";
-        if (tabKey(root) === undefined) tabs.set(root, newTab());
-        return tasklistView(tabState(root));
-      },
-      rows(params) {
-        return tabListRows(params);
-      },
-      onEvent(event, view, context) {
-        if (!view.instance) return;
-        return onTabEvent(event, view.instance, context);
-      },
-      onClose(view) {
-        const key = view.instance ? tabKey(view.instance) : undefined;
-        if (key !== undefined) tabs.delete(key);
-      },
-    },
+    [PAGE]: sharedView,
+    [TAB]: sharedView,
   },
 
   tools: {

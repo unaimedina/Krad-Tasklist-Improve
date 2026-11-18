@@ -180,41 +180,90 @@ test("the filter select re-counts the task list", async (t) => {
   assert.deepEqual(rows.result.rows.map((r) => r.node.key), ["001"]);
 });
 
-test("the Tasks sidebar view has ghost buttons and serves the fixture tasks as rows", async (t) => {
+/** Keys of a node's direct children. */
+const childKeys = (node) => (node?.children ?? []).map((c) => c.key);
+
+test("the Tasks page renders the same UI as the tab, plus Open in a tab", async (t) => {
   const dir = fixtureRoot();
-  const { child, request } = startProgram([{ id: "g", name: "g", root: dir }]);
+  const empty = mkdtempSync(join(tmpdir(), "tasklist-"));
+  // The group with plans/ is preferred even when it is not the first one.
+  const { child, request } = startProgram([
+    { id: "e", name: "empty", root: empty },
+    { id: "g", name: "g", root: dir },
+  ]);
   t.after(() => {
     child.kill();
     rmSync(dir, { recursive: true, force: true });
+    rmSync(empty, { recursive: true, force: true });
   });
   await request("initialize", INIT);
-  const reply = await request("view/render", { view: "tasks" });
-  const text = JSON.stringify(reply.result);
-  assert.ok(reply.result, JSON.stringify(reply));
-  assert.ok(!text.includes('"variant":"primary"'), text.slice(0, 500));
-  const button = findNode(reply.result, "sidebar-open");
-  assert.equal(button?.type, "button", text.slice(0, 500));
-  assert.equal(button?.action, "open-tab");
-  assert.equal(button?.variant, "ghost");
-  const list = findNode(reply.result, "sidebar-tasks");
-  assert.equal(list?.type, "list", text.slice(0, 500));
+  const page = (await request("view/render", { view: "tasks" })).result;
+  const tab = (await request("view/render", { view: "tasklist", instance: dir })).result;
+  const text = JSON.stringify(page).slice(0, 500);
+  assert.equal(page?.key, "root", text);
+  assert.equal(page.style.height, "fill");
+  assert.deepEqual(childKeys(page), childKeys(tab));
+  assert.deepEqual(childKeys(findNode(page, "body")), ["tasks-pane", "detail"]);
+  const list = findNode(page, "tasks");
+  assert.equal(list?.type, "list", text);
+  assert.equal(list.selection, "single");
   assert.equal(list.count, FIXTURE_IDS.length);
-  const rows = await request("view/rows", { view: "tasks", node: "sidebar-tasks", start: 0, end: list.count });
+  assert.deepEqual(findNode(page, "body"), findNode(tab, "body"));
+  // Open in a tab in the page header only; a group select because there are two groups.
+  assert.equal(findNode(page, "toolbar-open-tab")?.action, "open-tab");
+  assert.equal(findNode(tab, "toolbar-open-tab"), null);
+  const group = findNode(page, "header-group");
+  assert.equal(group?.action, "group");
+  assert.equal(group.value, dir);
+  assert.equal(findNode(tab, "header-group"), null);
+  const rows = await request("view/rows", { view: "tasks", node: "tasks", start: 0, end: list.count });
   assert.deepEqual(rows.result?.rows?.map((r) => r.node.key), FIXTURE_IDS, JSON.stringify(rows).slice(0, 300));
 });
 
-test("the Tasks sidebar view without a plans folder still offers Open Tasklist", async (t) => {
-  const dir = mkdtempSync(join(tmpdir(), "tasklist-"));
-  const { child, request } = startProgram([{ id: "g", name: "g", root: dir }]);
+test("choosing a task in the page selects it in the page, not in the tab", async (t) => {
+  const dir = fixtureRoot();
+  const { child, request, notify, waitFor } = startProgram([{ id: "g", name: "g", root: dir }]);
   t.after(() => {
     child.kill();
     rmSync(dir, { recursive: true, force: true });
   });
   await request("initialize", INIT);
+  await request("view/render", { view: "tasks" });
+  await request("view/render", { view: "tasklist", instance: dir });
+  notify("view/event", { view: "tasks", event: { kind: "choose", node: "tasks", items: ["002"] } });
+  const message = await waitFor((m) => m.method === "view/patch");
+  assert.equal(message.params.view, "tasks", JSON.stringify(message.params).slice(0, 300));
+  const patches = message.params.patches;
+  assert.equal(patches[0].op, "replace");
+  assert.equal(patches[0].node.key, "detail");
+  assert.deepEqual(patches[1], { op: "invalidate", key: "tasks" });
+  assert.ok(findNode(patches[0].node, "plan-md")?.text.startsWith("## Steps"));
+  // The page keeps its selection; the tab still has none; no tab was opened.
+  const page = await request("view/render", { view: "tasks" });
+  assert.equal(findNode(page.result, "detail-title")?.text, "Plan B from file");
+  const tab = await request("view/render", { view: "tasklist", instance: dir });
+  assert.equal(findNode(tab.result, "plan-md"), null);
+  assert.equal(findNode(tab.result, "detail-text")?.text, "Select a task to read its plan");
+});
+
+test("the Tasks page without plans or without a group shows its empty states", async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "tasklist-"));
+  const { child, request } = startProgram([{ id: "g", name: "g", root: dir }]);
+  const none = startProgram([]);
+  t.after(() => {
+    child.kill();
+    none.child.kill();
+    rmSync(dir, { recursive: true, force: true });
+  });
+  await request("initialize", INIT);
   const reply = await request("view/render", { view: "tasks" });
-  assert.equal(findNode(reply.result, "sidebar-open")?.action, "open-tab", JSON.stringify(reply));
-  assert.equal(findNode(reply.result, "sidebar-tasks"), null);
-  assert.equal(findNode(reply.result, "sidebar-generate")?.variant, "ghost");
+  assert.equal(findNode(reply.result, "toolbar-open-tab")?.action, "open-tab", JSON.stringify(reply));
+  assert.equal(findNode(reply.result, "tasks"), null);
+  assert.equal(findNode(reply.result, "empty-generate")?.variant, "secondary");
+
+  await none.request("initialize", INIT);
+  const empty = await none.request("view/render", { view: "tasks" });
+  assert.equal(findNode(empty.result, "empty-text")?.text, "Open a group to see its tasks.", JSON.stringify(empty));
 });
 
 test("tasklist_list lists the tasks of the given root", async (t) => {

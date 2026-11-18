@@ -5,9 +5,8 @@ import {
   KEYS,
   filteredTasks,
   header,
+  noGroupView,
   planBody,
-  sidebarRows,
-  sidebarView,
   statusBadge,
   taskDetail,
   taskRows,
@@ -320,41 +319,47 @@ test("tasklistView session strip and collapsed problems", () => {
   assert.ok(!find(tasklistView(makeState()), (n) => n.key === KEYS.session));
 });
 
-test("the sidebar is compact: ghost buttons, a list, one-line rows", () => {
-  const view = sidebarView(makeState());
-  assert.ok(!walk(view).some((n) => n.variant === "primary"));
-  assert.equal(find(view, (n) => n.action === ACTIONS.openTab).icon, "open-external");
-  for (const action of [ACTIONS.openTab, ACTIONS.runNext, ACTIONS.refresh]) {
-    const button = find(view, (n) => n.action === action);
-    assert.equal(button.variant, "ghost", action);
-    assert.ok(button.tooltip, action);
-  }
-  assert.equal(find(view, (n) => n.key === "sidebar-done").text, "1/4");
-  const list = find(view, (n) => n.key === KEYS.sidebarTasks);
-  assert.equal(list.type, "list");
-  assert.equal(list.selection, "single");
-  assert.equal(list.count, 4);
-  const rows = sidebarRows(makeState());
-  assert.deepEqual(rows.map((r) => r.node.key), ["001", "002", "003", "004"]);
-  assert.ok(!walk(rows[0].node).some((n) => n.type === "flex" && n.direction === "column"));
-  for (const row of rows) {
-    assert.equal(row.menu, undefined);
-    assert.equal(row.node.justify, "between");
-    assert.equal(row.node.style.padding, "xs");
-    assert.equal(row.node.children.at(-1).type, "badge");
-  }
-  assert.equal(find(rows[2].node, (n) => n.key === "003-id").style.font, "mono");
-  assert.equal(view.style.padding, "md");
-  assert.equal(view.style.gap, "md");
-  assert.equal(view.style.height, "fill");
+const PAGE = { groups: [{ value: ROOT, label: "repo" }, { value: "/other", label: "other" }] };
 
-  const noPlans = makeState();
-  noPlans.set = { ...noPlans.set, dir: null, tasks: [] };
-  const empty = sidebarView(noPlans);
-  assert.ok(!walk(empty).some((n) => n.variant === "primary"));
-  assert.equal(find(empty, (n) => n.action === ACTIONS.generate).variant, "ghost");
-  assert.ok(!find(empty, (n) => n.key === KEYS.sidebarTasks));
-  assert.ok(find(sidebarView(null), (n) => n.text === "Open a group to see its tasks."));
+test("the Tasks page is the tab's UI plus Open in a tab and a group select", () => {
+  const state = makeState({ selected: "003", planText: "# Plan 003: x\n\nbody" });
+  const tab = tasklistView(state);
+  const page = tasklistView(state, PAGE);
+  // Same structure: header, body with the tasks pane (single-selection list) and the plan pane.
+  for (const view of [tab, page]) {
+    assert.deepEqual(view.children.map((n) => n.key), [KEYS.header, KEYS.body]);
+    const body = find(view, (n) => n.key === KEYS.body);
+    assert.deepEqual(body.children.map((n) => n.key), [KEYS.tasksPane, KEYS.detail]);
+    assert.equal(find(view, (n) => n.key === KEYS.tasks).selection, "single");
+    assert.ok(find(view, (n) => n.type === "markdown"));
+  }
+  assert.deepEqual(find(page, (n) => n.key === KEYS.body), find(tab, (n) => n.key === KEYS.body));
+  // Open in a tab: in the page's pill only.
+  const open = find(page, (n) => n.action === ACTIONS.openTab);
+  assert.equal(open.variant, "ghost");
+  assert.equal(open.icon, "open-external");
+  assert.equal(open.tooltip, "Open in a tab");
+  assert.ok(find(find(page, (n) => n.key === "header-tools"), (n) => n === open));
+  assert.ok(!find(tab, (n) => n.action === ACTIONS.openTab));
+  // Group select only with several groups.
+  const group = find(page, (n) => n.action === ACTIONS.group);
+  assert.equal(group.type, "select");
+  assert.equal(group.value, ROOT);
+  assert.deepEqual(group.options.map((o) => o.label), ["repo", "other"]);
+  assert.ok(!find(tab, (n) => n.action === ACTIONS.group));
+  const single = tasklistView(state, { groups: [{ value: ROOT, label: "repo" }] });
+  assert.ok(!find(single, (n) => n.action === ACTIONS.group));
+  assert.ok(find(single, (n) => n.key === "header-folder"));
+  assert.ok(find(single, (n) => n.action === ACTIONS.openTab));
+});
+
+test("the page without a group shows a centred empty state", () => {
+  const view = noGroupView();
+  assert.equal(view.key, KEYS.root);
+  assert.equal(view.style.height, "fill");
+  const empty = find(view, (n) => n.key === KEYS.empty);
+  assert.equal(empty.style.padding, "xl");
+  assert.ok(find(empty, (n) => n.text === "Open a group to see its tasks."));
 });
 
 /** Rows (flex row) with siblings whose child has width fill: that child would overflow the row. */
@@ -376,9 +381,8 @@ test("no row gives width fill to a child that has siblings", () => {
     state.set.problems = ["one"];
     const nodes = [
       tasklistView(state),
-      sidebarView(state),
+      tasklistView(state, PAGE),
       ...taskRows(state).map((r) => r.node),
-      ...sidebarRows(state).map((r) => r.node),
     ];
     for (const node of nodes) assert.deepEqual(widthFillInRows(node), [], node.key);
   }
@@ -399,7 +403,7 @@ test("all keys in the views are unique", () => {
   for (const overrides of variants) {
     const state = makeState(overrides);
     state.set.problems = ["one", "two", "three", "four"];
-    for (const view of [tasklistView(state), sidebarView(state)]) {
+    for (const view of [tasklistView(state), tasklistView(state, PAGE)]) {
       const keys = walk(view).map((n) => n.key);
       assert.equal(new Set(keys).size, keys.length, `duplicate keys: ${keys}`);
     }

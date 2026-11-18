@@ -67,8 +67,10 @@ var ACTIONS = {
   // write plans with /improve
   reconcile: "reconcile",
   // /improve reconcile
-  openTab: "open-tab"
-  // sidebar: open the Tasklist tab
+  openTab: "open-tab",
+  // Tasks page: open the Tasklist tab of its group
+  group: "group"
+  // Tasks page: select change to switch group
 };
 var KEYS = {
   root: "root",
@@ -78,11 +80,9 @@ var KEYS = {
   body: "body",
   tasksPane: "tasks-pane",
   tasks: "tasks",
-  // the tab's task list (ui.list, rows served by rows())
+  // the task list (ui.list, rows served by rows())
   detail: "detail",
-  empty: "empty",
-  sidebarTasks: "sidebar-tasks"
-  // the sidebar's task list
+  empty: "empty"
 };
 var FILTERS = ["all", "todo", "running", "done", "blocked"];
 var FILTER_LABELS = {
@@ -211,33 +211,38 @@ function taskRow(state, task) {
 function taskRows(state, start = 0, end = Number.MAX_SAFE_INTEGER) {
   return filteredTasks(state).slice(start, end).map((task) => taskRow(state, task));
 }
-function header(state) {
+function header(state, page = null) {
   const runnable = hasTodo(state) ? "yes" : "no";
   const left = [
     ui.icon("header-icon", "tasks", "text_subtle"),
-    ui.text("header-title", "Tasklist", { size: "lg", weight: "bold", color: "text_strong", wrap: "no_wrap" }),
-    ui.text("header-folder", basename(state.set.root) || state.set.root, {
-      size: "sm",
-      color: "text_muted",
-      wrap: "no_wrap"
-    })
+    ui.text("header-title", "Tasklist", { size: "lg", weight: "bold", color: "text_strong", wrap: "no_wrap" })
   ];
+  const group = page?.groups.find((g) => g.value === state.set.root);
+  if (page !== null && page.groups.length > 1 && group !== void 0) {
+    left.push(ui.select("header-group", ACTIONS.group, page.groups, group.value));
+  } else {
+    left.push(
+      ui.text("header-folder", basename(state.set.root) || state.set.root, {
+        size: "sm",
+        color: "text_muted",
+        wrap: "no_wrap"
+      })
+    );
+  }
   if (state.set.dir !== null) {
     const { running, blocked } = counts(state);
     left.push(doneChip("header-done", state));
     if (running > 0) left.push(ui.badge("header-running", `${running} running`, "info"));
     if (blocked > 0) left.push(ui.badge("header-blocked", `${blocked} blocked`, "error"));
   }
-  const tools = hrow(
-    "header-tools",
-    [
-      iconButton("toolbar-new", ACTIONS.newTask, "add", "New task"),
-      iconButton("toolbar-generate", ACTIONS.generate, "magic", "Write plans with /improve"),
-      iconButton("toolbar-reconcile", ACTIONS.reconcile, "repeat", "Reconcile plans with /improve"),
-      iconButton("toolbar-refresh", ACTIONS.refresh, "refresh", "Refresh")
-    ],
-    { padding: "xs", gap: "xs", radius: "full", border: "border" }
-  );
+  const toolButtons = [
+    iconButton("toolbar-new", ACTIONS.newTask, "add", "New task"),
+    iconButton("toolbar-generate", ACTIONS.generate, "magic", "Write plans with /improve"),
+    iconButton("toolbar-reconcile", ACTIONS.reconcile, "repeat", "Reconcile plans with /improve"),
+    iconButton("toolbar-refresh", ACTIONS.refresh, "refresh", "Refresh")
+  ];
+  if (page !== null) toolButtons.push(iconButton("toolbar-open-tab", ACTIONS.openTab, "open-external", "Open in a tab"));
+  const tools = hrow("header-tools", toolButtons, { padding: "xs", gap: "xs", radius: "full", border: "border" });
   const right = [
     tools,
     ui.button("toolbar-run-next", ACTIONS.runNext, {
@@ -470,8 +475,8 @@ function taskDetail(state) {
     style: { ...PANEL, height: "fill", padding: "lg", gap: "md" }
   });
 }
-function tasklistView(state) {
-  const children = [header(state)];
+function tasklistView(state, page = null) {
+  const children = [header(state, page)];
   if (state.session.active) children.push(sessionStrip(state));
   if (state.set.problems.length > 0) children.push(problemsPanel(state.set.problems));
   if (state.set.dir === null) {
@@ -505,73 +510,12 @@ function tasklistView(state) {
     style: { width: "fill", height: "fill", padding: "lg", gap: "lg" }
   });
 }
-function sidebarRow(state, task) {
-  const badge = statusBadge(task, runOf(state, task.id));
-  const id = task.id;
-  const node2 = hrow(
-    id,
-    [
-      hrow(`${id}-left`, [
-        statusIcon(`${id}-icon`, task, badge),
-        ui.text(`${id}-id`, id, { size: "xs", font: "mono", color: "text_muted", wrap: "no_wrap" }),
-        ui.text(`${id}-title`, task.title, { size: "sm", color: "text_default", wrap: "no_wrap" })
-      ]),
-      ui.badge(`${id}-badge`, badge.text, badge.tone)
-    ],
-    { width: "fill", padding: "xs", gap: "md" },
-    "between"
+function noGroupView() {
+  return ui.flex(
+    KEYS.root,
+    [emptyState(KEYS.empty, "Open a group to see its tasks.", [], { width: "fill", height: "fill" })],
+    { direction: "column", align: "stretch", style: { width: "fill", height: "fill", padding: "lg", gap: "lg" } }
   );
-  return { node: node2 };
-}
-function sidebarRows(state, start = 0, end = Number.MAX_SAFE_INTEGER) {
-  return state.set.tasks.slice(start, end).map((task) => sidebarRow(state, task));
-}
-function sidebarView(state) {
-  const left = [
-    ui.text("sidebar-label", "Tasks", { size: "sm", weight: "medium", color: "text_strong", wrap: "no_wrap" })
-  ];
-  if (state !== null && state.set.dir !== null) {
-    const { done, total } = counts(state);
-    left.push(ui.badge("sidebar-done", `${done}/${total}`, total > 0 && done === total ? "success" : "neutral"));
-  }
-  const runnable = state !== null && hasTodo(state) ? "yes" : "no";
-  const head = hrow(
-    "sidebar-header",
-    [
-      hrow("sidebar-header-left", left),
-      hrow(
-        "sidebar-header-right",
-        [
-          iconButton("sidebar-open", ACTIONS.openTab, "open-external", "Open Tasklist"),
-          iconButton("sidebar-run-next", ACTIONS.runNext, "play", "Run next", runnable),
-          iconButton("sidebar-refresh", ACTIONS.refresh, "refresh", "Refresh")
-        ],
-        { gap: "xs" }
-      )
-    ],
-    { width: "fill" },
-    "between"
-  );
-  const children = [head];
-  if (state === null) {
-    children.push(ui.text("sidebar-empty", "Open a group to see its tasks.", { size: "sm", color: "text_muted", wrap: "wrap" }));
-  } else if (state.set.dir === null) {
-    children.push(
-      ui.text("sidebar-empty", "No plans in this folder yet.", { size: "sm", color: "text_muted", wrap: "wrap" }),
-      ui.button("sidebar-generate", ACTIONS.generate, {
-        label: "Write plans with /improve",
-        icon: "magic",
-        variant: "ghost"
-      })
-    );
-  } else {
-    children.push(ui.list(KEYS.sidebarTasks, state.set.tasks.length, "single"));
-  }
-  return ui.flex(KEYS.root, children, {
-    direction: "column",
-    align: "stretch",
-    style: { width: "fill", height: "fill", padding: "md", gap: "md" }
-  });
 }
 export {
   ACTIONS,
@@ -579,12 +523,10 @@ export {
   KEYS,
   filteredTasks,
   header,
+  noGroupView,
   planBody,
   problemsPanel,
   sessionStrip,
-  sidebarRow,
-  sidebarRows,
-  sidebarView,
   statusBadge,
   taskDetail,
   taskRow,
