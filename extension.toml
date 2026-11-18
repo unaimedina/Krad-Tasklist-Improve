@@ -1,0 +1,144 @@
+id = "tasklist"
+name = "Tasklist"
+version = "0.1.0"
+description = "Plans from the improve skill as a task list: read, edit and run them with agents."
+api = "1.1"
+activation = [{ workspace_contains = "plans/README.md" }]
+
+[program]
+placement = "app"
+permissions = ["terminals"]
+runtime = "node"
+args = ["dist/main.js"]
+
+[[contributes.command]]
+id = "tasklist.open"
+title = "Tasklist: Open"
+icon = "tasks"
+
+[[contributes.command]]
+id = "tasklist.refresh"
+title = "Tasklist: Refresh"
+icon = "refresh"
+
+[[contributes.command]]
+id = "tasklist.new-task"
+title = "Tasklist: New task"
+icon = "add"
+
+[[contributes.command]]
+id = "tasklist.generate"
+title = "Tasklist: Write plans with /improve"
+icon = "magic"
+
+[[contributes.command]]
+id = "tasklist.reconcile"
+title = "Tasklist: Reconcile plans with /improve"
+icon = "repeat"
+
+[[contributes.command]]
+id = "tasklist.run-next"
+title = "Tasklist: Run the next task"
+icon = "play"
+
+[[contributes.command]]
+id = "tasklist.auto-run"
+title = "Tasklist: Start an auto-run session"
+icon = "flash"
+
+[[contributes.command]]
+id = "tasklist.stop"
+title = "Tasklist: Stop the auto-run session"
+icon = "stop"
+
+[[contributes.menu]]
+command = "tasklist.open"
+target = "group"
+
+[[contributes.menu]]
+command = "tasklist.open"
+target = "file"
+files = ["README.md"]
+
+[[contributes.keybinding]]
+command = "tasklist.open"
+macos = "cmd-alt-shift-t"
+linux = "ctrl-alt-shift-t"
+windows = "ctrl-alt-shift-t"
+
+[[contributes.titlebar_item]]
+id = "tasklist"
+title = "Tasklist"
+icon = "tasks"
+side = "right"
+command = "tasklist.open"
+
+[[contributes.view]]
+id = "tasklist"
+title = "Tasklist"
+zone = "file_tab"
+icon = "tasks"
+
+[[contributes.setting]]
+key = "harness"
+title = "Agent"
+description = "The coding agent that runs a task."
+type = "choice"
+default = "claude"
+options = [
+  { value = "claude", label = "Claude Code" },
+  { value = "codex", label = "Codex" },
+  { value = "opencode", label = "opencode" },
+]
+
+[[contributes.setting]]
+key = "execution-style"
+title = "How an agent runs a plan"
+description = "Direct: the agent follows the plan itself. Improve: the agent runs '/improve execute <plan>', which dispatches an executor and reviews its diff."
+type = "choice"
+default = "direct"
+options = [
+  { value = "direct", label = "Direct" },
+  { value = "improve", label = "/improve execute" },
+]
+
+[[contributes.setting]]
+key = "extra-args"
+title = "Extra agent arguments"
+description = "Added before the prompt, split on spaces, e.g. --model sonnet."
+type = "text"
+default = ""
+
+[[contributes.setting]]
+key = "max-parallel"
+title = "Parallel agents in an auto-run"
+description = "1 runs tasks one after another in the group folder; more runs each task in its own git worktree."
+type = "number"
+default = 1
+min = 1
+max = 8
+
+[[contributes.setting]]
+key = "stop-on-failure"
+title = "Stop the auto-run when a task is blocked or needs review"
+type = "toggle"
+default = true
+
+[[contributes.setting]]
+key = "krad-path"
+title = "Krad CLI"
+description = "The krad CLI used to follow agent states, by name on PATH or as a full path."
+type = "text"
+default = "krad"
+
+[[contributes.tool]]
+name = "tasklist_list"
+description = "List the tasks (implementation plans in plans/) of the group with their status, dependencies and plan file."
+effect = "read_only"
+input_schema = { type = "object", properties = {} }
+
+[[contributes.tool]]
+name = "tasklist_set_status"
+description = "Set the status of one task in plans/README.md: TODO, IN PROGRESS, DONE, BLOCKED or REJECTED, with an optional one-line note."
+effect = "destructive"
+input_schema = { type = "object", properties = { id = { type = "string", description = "Three-digit plan id, e.g. 003." }, status = { type = "string", enum = ["TODO", "IN PROGRESS", "DONE", "BLOCKED", "REJECTED"] }, note = { type = "string", description = "One-line reason, for BLOCKED or REJECTED." } }, required = ["id", "status"] }
