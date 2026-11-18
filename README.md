@@ -23,8 +23,8 @@ The extension activates in groups that contain `plans/README.md`. Open it with *
 ## Use
 
 - **The Tasks page**: **Tasks** in the left nav shows the full Tasklist for the group whose
-  folder has `plans/` (a select switches group when there are several). It selects tasks on its
-  own; **Open in a tab** opens the same group's tab.
+  folder has `plans/` (with several groups, the group button next to the title switches group). It
+  selects tasks on its own; **Open in a tab** opens the same group's tab.
 - **Open the tab**: **Open in a tab** on the Tasks page, the **Tasklist** titlebar button, the
   **Tasklist: Open** command, the group's context menu (or the context menu of
   `plans/README.md`), or `Ctrl+Alt+Shift+T`. One tab per group; the page and the tab show the same
@@ -36,11 +36,14 @@ The extension activates in groups that contain `plans/README.md`. Open it with *
   an empty plan by hand and adds a TODO row.
 - **Read and edit**: click a task in the list to read its plan (the **Tasks** filter narrows the
   list to To do, Running, Done or Blocked; the task's pane has Run, Run in worktree, Compare agents
-  and the editors). **Edit in editor** opens the file in Krad's
+  and the editors). The plan shows one section at a time (Overview, then each `##` heading, or
+  **Whole plan**), picked above the text. **Edit in editor** opens the file in Krad's
   editor; **Edit with a prompt** (the magic button) asks what should change and opens the chosen
-  agent on that plan file only, to rewrite it without carrying it out. The status select writes
+  agent on that plan file only, to rewrite it without carrying it out. **Change status** writes
   `plans/README.md` (BLOCKED and REJECTED ask for a one-line reason). The views refresh when a plan
   file is saved, and for an hour after an agent was asked to edit a plan, whenever `plans/` changes.
+- **Narrow windows**: the header and the action rows wrap onto more lines. The layout button in the
+  header stacks the panes (tasks on top, the plan under them) or puts them side by side again.
 - **Run one**: **Run** (or **Run next**) opens an agent terminal in the group folder with a prompt
   that points at the plan, and sets the row to IN PROGRESS. The agent sets the row to DONE or
   BLOCKED when it finishes; if it stops without doing so the task needs review and stays

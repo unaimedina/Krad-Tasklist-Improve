@@ -156,8 +156,11 @@ test("choosing a task patches the detail pane with its plan Markdown", async (t)
   const plan = readFileSync(join(dir, "plans", "002-b.md"), "utf8");
   assert.ok(!md.text.includes("# Plan 002"), md.text.slice(0, 80));
   assert.ok(!/^## Status/m.test(md.text), md.text.slice(0, 80));
-  assert.ok(md.text.startsWith("## Steps"), md.text.slice(0, 80));
-  assert.ok(plan.endsWith(md.text), "the Markdown is the plan text minus its H1 and Status section");
+  // The plan renders one section at a time; 002 has one (Steps), shown without its heading line.
+  assert.ok(!/^## /m.test(md.text), md.text.slice(0, 80));
+  assert.ok(md.text.startsWith("### Step 1: Do it"), md.text.slice(0, 80));
+  assert.ok(plan.includes(md.text), "the Markdown is a section of the plan");
+  assert.equal(findNode(patches[0].node, "plan-sections"), null, "one section: no section select");
   assert.equal(findNode(patches[0].node, "detail-title")?.text, "Plan B from file");
 
   // A later full render keeps the selection.
@@ -223,7 +226,7 @@ test("a status write patches the open views in place and leaves the plan scroll 
   assert.ok(!keys.includes("root"), keys.join(","));
   assert.ok(!keys.includes("detail-plan"), keys.join(","));
   const top = message.params.patches.find((p) => p.node?.key === "detail-top").node;
-  assert.equal(findNode(top, "detail-status")?.value, "DONE");
+  assert.equal(findNode(top, "detail-status-badge")?.text, "done");
 });
 
 /** Keys of a node's direct children. */
@@ -255,12 +258,14 @@ test("the Tasks page renders the same UI as the tab, plus Open in a tab", async 
   assert.equal(list.selection, "single");
   assert.equal(list.count, FIXTURE_IDS.length);
   assert.deepEqual(findNode(page, "body"), findNode(tab, "body"));
-  // Open in a tab in the page header only; a group select because there are two groups.
+  // Open in a tab in the page header only; a group button because there are two groups.
   assert.equal(findNode(page, "toolbar-open-tab")?.action, "open-tab");
   assert.equal(findNode(tab, "toolbar-open-tab"), null);
   const group = findNode(page, "header-group");
   assert.equal(group?.action, "group");
-  assert.equal(group.value, dir);
+  assert.equal(group.type, "button");
+  assert.equal(group.label, "g");
+  assert.equal(group.icon, "chevron-down");
   assert.equal(findNode(tab, "header-group"), null);
   const rows = await request("view/rows", { view: "tasks", node: "tasks", start: 0, end: list.count });
   assert.deepEqual(rows.result?.rows?.map((r) => r.node.key), FIXTURE_IDS, JSON.stringify(rows).slice(0, 300));
@@ -283,7 +288,7 @@ test("choosing a task in the page selects it in the page, not in the tab", async
   assert.equal(patches[0].op, "replace");
   assert.equal(patches[0].node.key, "detail");
   assert.deepEqual(patches[1], { op: "invalidate", key: "tasks" });
-  assert.ok(findNode(patches[0].node, "plan-md")?.text.startsWith("## Steps"));
+  assert.ok(findNode(patches[0].node, "plan-md")?.text.startsWith("### Step 1: Do it"));
   // The page keeps its selection; the tab still has none; no tab was opened.
   const page = await request("view/render", { view: "tasks" });
   assert.equal(findNode(page.result, "detail-title")?.text, "Plan B from file");
@@ -405,5 +410,126 @@ test("an agent's write to the plan refreshes the open views", async (t) => {
     (m) => m.method === "view/patch" && JSON.stringify(m.params.patches).includes("Renamed by the agent"),
   );
   const md = message.params.patches.map((p) => findNode(p.node, "plan-md")).find(Boolean);
-  assert.equal(md.text, "## Steps\n\n1. Renamed by the agent.\n");
+  assert.equal(md.text, "1. Renamed by the agent.");
+});
+
+const isPatch = (m) => m.method === "view/patch";
+const patchKeys = (m) => m.params.patches.map((p) => p.node?.key ?? `${p.op}:${p.key}`);
+
+test("the page's group button opens the app's picker and switches group", async (t) => {
+  const dir = fixtureRoot();
+  const empty = mkdtempSync(join(tmpdir(), "tasklist-"));
+  const { child, request, notify, waitFor, appRequests } = startProgram(
+    [
+      { id: "g", name: "g", root: dir },
+      { id: "e", name: "empty", root: empty },
+    ],
+    { "window/pick": [empty] },
+  );
+  t.after(() => {
+    child.kill();
+    rmSync(dir, { recursive: true, force: true });
+    rmSync(empty, { recursive: true, force: true });
+  });
+  await request("initialize", INIT);
+  const before = await request("view/render", { view: "tasks" });
+  assert.equal(findNode(before.result, "header-group")?.label, "g");
+  notify("view/event", { view: "tasks", event: { kind: "click", action: "group" } });
+  const message = await waitFor((m) => isPatch(m) && patchKeys(m).includes("root"));
+  const pick = appRequests.find((m) => m.method === "window/pick");
+  assert.deepEqual(pick.params.items.map((i) => i.label), ["g", "empty"]);
+  const root = message.params.patches.find((p) => p.node?.key === "root").node;
+  assert.equal(findNode(root, "header-group")?.label, "empty");
+  assert.ok(findNode(root, "empty"), "the empty group shows its no-plans state");
+});
+
+test("Change status opens the app's picker and writes the chosen status", async (t) => {
+  const dir = fixtureRoot();
+  const { child, request, notify, waitFor, appRequests } = startProgram([{ id: "g", name: "g", root: dir }], {
+    "window/pick": ["DONE"],
+  });
+  t.after(() => {
+    child.kill();
+    rmSync(dir, { recursive: true, force: true });
+  });
+  const ref = { view: "tasklist", instance: dir };
+  await request("initialize", INIT);
+  await request("view/render", ref);
+  notify("view/event", { ...ref, event: { kind: "choose", node: "tasks", items: ["005"] } });
+  notify("view/event", { ...ref, event: { kind: "click", action: "set-status" } });
+  const message = await waitFor(
+    (m) => isPatch(m) && patchKeys(m).includes("detail-top") && JSON.stringify(m.params.patches).includes('"text":"done"'),
+  );
+  const pick = appRequests.find((m) => m.method === "window/pick");
+  assert.equal(pick.params.title, "Status of plan 005");
+  assert.deepEqual(pick.params.items.map((i) => i.value), ["TODO", "IN PROGRESS", "DONE", "BLOCKED", "REJECTED"]);
+  assert.equal(pick.params.items.find((i) => i.value === "TODO").detail, "current");
+  const index = readFileSync(join(dir, "plans", "README.md"), "utf8");
+  assert.match(index, /\| \[005\]\(005-five\.md\) \| Fifth plan \| P3 \| S \| — \| DONE \|/);
+  const top = message.params.patches.find((p) => p.node?.key === "detail-top").node;
+  assert.equal(findNode(top, "detail-status-badge")?.text, "done");
+});
+
+test("the layout button stacks the panes and remembers it for that view", async (t) => {
+  const dir = fixtureRoot();
+  const { child, request, notify, waitFor } = startProgram([{ id: "g", name: "g", root: dir }]);
+  t.after(() => {
+    child.kill();
+    rmSync(dir, { recursive: true, force: true });
+  });
+  const ref = { view: "tasklist", instance: dir };
+  await request("initialize", INIT);
+  const side = await request("view/render", ref);
+  assert.equal(findNode(side.result, "body")?.direction, "row");
+  notify("view/event", { ...ref, event: { kind: "click", action: "layout" } });
+  const message = await waitFor((m) => isPatch(m) && patchKeys(m).includes("root"));
+  const root = message.params.patches.find((p) => p.node?.key === "root").node;
+  assert.equal(findNode(root, "body")?.direction, "column");
+  // The next render keeps it; the page keeps its own (side by side).
+  assert.equal(findNode((await request("view/render", ref)).result, "body")?.direction, "column");
+  assert.equal(findNode((await request("view/render", { view: "tasks" })).result, "body")?.direction, "row");
+});
+
+test("switching section patches only the plan scroll, with that section's Markdown", async (t) => {
+  const dir = fixtureRoot();
+  writeFileSync(
+    join(dir, "plans", "005-five.md"),
+    "# Plan 005: Plan five\n\nIntro text.\n\n## Status\n\n- **Priority**: P1\n\n## Why this matters\n\nBecause.\n\n## Steps\n\n1. Do it.\n",
+  );
+  const { child, request, notify, waitFor } = startProgram([{ id: "g", name: "g", root: dir }]);
+  t.after(() => {
+    child.kill();
+    rmSync(dir, { recursive: true, force: true });
+  });
+  const ref = { view: "tasklist", instance: dir };
+  await request("initialize", INIT);
+  await request("view/render", ref);
+  notify("view/event", { ...ref, event: { kind: "choose", node: "tasks", items: ["005"] } });
+  const chosen = await waitFor((m) => isPatch(m) && patchKeys(m).includes("detail"));
+  const detail = chosen.params.patches[0].node;
+  const select = findNode(detail, "plan-sections");
+  assert.deepEqual(select.options.map((o) => o.label), ["Overview", "Why this matters", "Steps", "Whole plan"]);
+  assert.equal(findNode(detail, "plan-md").text, "Intro text.");
+  const steps = select.options.find((o) => o.label === "Steps").value;
+  notify("view/event", { ...ref, event: { kind: "select", action: "section", value: steps } });
+  const switched = await waitFor((m) => isPatch(m) && patchKeys(m).includes("plan-scroll"));
+  assert.deepEqual(patchKeys(switched), ["plan-scroll"]);
+  assert.equal(findNode(switched.params.patches[0].node, "plan-md").text, "1. Do it.");
+  // The choice holds across renders.
+  assert.equal(findNode((await request("view/render", ref)).result, "plan-md").text, "1. Do it.");
+});
+
+test("rows() serves the list from memory: it works with the plans folder gone", async (t) => {
+  const dir = fixtureRoot();
+  const { child, request } = startProgram([{ id: "g", name: "g", root: dir }]);
+  t.after(() => {
+    child.kill();
+    rmSync(dir, { recursive: true, force: true });
+  });
+  const ref = { view: "tasklist", instance: dir };
+  await request("initialize", INIT);
+  await request("view/render", ref);
+  rmSync(join(dir, "plans"), { recursive: true, force: true });
+  const rows = await request("view/rows", { ...ref, node: "tasks", start: 1, end: 3 });
+  assert.deepEqual(rows.result?.rows?.map((r) => r.node.key), ["002", "003"], JSON.stringify(rows).slice(0, 300));
 });

@@ -1,48 +1,48 @@
 // src/main.ts
 import { execFile as execFile2 } from "node:child_process";
-import { readFileSync as readFileSync2, watch } from "node:fs";
-import { basename as basename3, dirname, relative as relative2, resolve as resolve2, sep } from "node:path";
+import { watch } from "node:fs";
+import { basename as basename3, dirname, relative as relative2, resolve as resolve3, sep } from "node:path";
 import { promisify as promisify2 } from "node:util";
 
 // node_modules/@krad-ade/extension/dist/view.js
-function node(type, key, fields) {
-  return { key, type, ...fields };
+function node(type, key2, fields) {
+  return { key: key2, type, ...fields };
 }
 var ui = {
-  flex: (key, children, options2 = {}) => node("flex", key, { ...options2, children }),
-  row: (key, children, style = {}) => node("flex", key, { direction: "row", style, children }),
-  column: (key, children, style = {}) => node("flex", key, { direction: "column", align: "stretch", style, children }),
-  stack: (key, children, style = {}) => node("stack", key, { style, children }),
-  grid: (key, columns, children, style = {}) => node("grid", key, { columns, style, children }),
-  scroll: (key, children, direction = "column") => node("scroll", key, { direction, children }),
-  text: (key, text, style = {}) => node("text", key, { text, style }),
-  markdown: (key, text) => node("markdown", key, { text }),
-  icon: (key, icon, color) => node("icon", key, { icon, color: color ?? null }),
-  image: (key, source, width = "auto", height = "auto") => node("image", key, { source, width, height }),
-  badge: (key, text, tone = "neutral") => node("badge", key, { text, tone }),
-  spinner: (key) => node("spinner", key, {}),
-  divider: (key) => node("divider", key, {}),
-  button: (key, action, options2 = {}) => node("button", key, { action, ...options2 }),
-  input: (key, action, options2 = {}) => node("input", key, { action, ...options2 }),
-  toggle: (key, action, value, label) => node("toggle", key, { action, value, label: label ?? null }),
-  select: (key, action, options2, value) => node("select", key, { action, options: options2, value: value ?? null }),
-  slider: (key, action, options2) => node("slider", key, { action, ...options2 }),
-  list: (key, count, selection = "none") => node("list", key, { count, selection }),
-  tree: (key, items) => node("tree", key, { items }),
-  table: (key, columns, count, sort) => node("table", key, { columns, count, sort: sort ?? null }),
-  form: (key, submit, fields, submitLabel) => node("form", key, { submit, fields, submit_label: submitLabel ?? null }),
-  details: (key, entries) => node("details", key, { entries }),
-  stream: (key, lines = [], maxLines) => node("stream", key, maxLines === void 0 ? { lines } : { lines, max_lines: maxLines }),
-  terminal: (key, terminal) => node("terminal", key, { terminal })
+  flex: (key2, children, options2 = {}) => node("flex", key2, { ...options2, children }),
+  row: (key2, children, style = {}) => node("flex", key2, { direction: "row", style, children }),
+  column: (key2, children, style = {}) => node("flex", key2, { direction: "column", align: "stretch", style, children }),
+  stack: (key2, children, style = {}) => node("stack", key2, { style, children }),
+  grid: (key2, columns, children, style = {}) => node("grid", key2, { columns, style, children }),
+  scroll: (key2, children, direction = "column") => node("scroll", key2, { direction, children }),
+  text: (key2, text, style = {}) => node("text", key2, { text, style }),
+  markdown: (key2, text) => node("markdown", key2, { text }),
+  icon: (key2, icon, color) => node("icon", key2, { icon, color: color ?? null }),
+  image: (key2, source, width = "auto", height = "auto") => node("image", key2, { source, width, height }),
+  badge: (key2, text, tone = "neutral") => node("badge", key2, { text, tone }),
+  spinner: (key2) => node("spinner", key2, {}),
+  divider: (key2) => node("divider", key2, {}),
+  button: (key2, action, options2 = {}) => node("button", key2, { action, ...options2 }),
+  input: (key2, action, options2 = {}) => node("input", key2, { action, ...options2 }),
+  toggle: (key2, action, value, label) => node("toggle", key2, { action, value, label: label ?? null }),
+  select: (key2, action, options2, value) => node("select", key2, { action, options: options2, value: value ?? null }),
+  slider: (key2, action, options2) => node("slider", key2, { action, ...options2 }),
+  list: (key2, count, selection = "none") => node("list", key2, { count, selection }),
+  tree: (key2, items) => node("tree", key2, { items }),
+  table: (key2, columns, count, sort) => node("table", key2, { columns, count, sort: sort ?? null }),
+  form: (key2, submit, fields, submitLabel) => node("form", key2, { submit, fields, submit_label: submitLabel ?? null }),
+  details: (key2, entries) => node("details", key2, { entries }),
+  stream: (key2, lines = [], maxLines) => node("stream", key2, maxLines === void 0 ? { lines } : { lines, max_lines: maxLines }),
+  terminal: (key2, terminal) => node("terminal", key2, { terminal })
 };
 var patch = {
   replace: (node2) => ({ op: "replace", node: node2 }),
   insert: (parent, index, node2) => ({ op: "insert", parent, index, node: node2 }),
-  remove: (key) => ({ op: "remove", key }),
-  setCount: (key, count) => ({ op: "set_count", key, count }),
-  invalidate: (key) => ({ op: "invalidate", key }),
+  remove: (key2) => ({ op: "remove", key: key2 }),
+  setCount: (key2, count) => ({ op: "set_count", key: key2, count }),
+  invalidate: (key2) => ({ op: "invalidate", key: key2 }),
   replaceItem: (tree, item) => ({ op: "replace_item", tree, item }),
-  append: (key, lines) => ({ op: "append", key, lines })
+  append: (key2, lines) => ({ op: "append", key: key2, lines })
 };
 
 // node_modules/@krad-ade/extension/dist/framing.js
@@ -127,8 +127,8 @@ var Connection = class {
   }
   request(method, params) {
     const id = this.nextId++;
-    return new Promise((resolve3, reject) => {
-      this.pending.set(id, { resolve: resolve3, reject });
+    return new Promise((resolve4, reject) => {
+      this.pending.set(id, { resolve: resolve4, reject });
       this.write({ jsonrpc: JSONRPC, id, method, params });
     });
   }
@@ -344,6 +344,10 @@ function createExtension(definition, io = {
   return { app, connection };
 }
 
+// src/cache.ts
+import { readdirSync as readdirSync2, readFileSync as readFileSync2, statSync as statSync2 } from "node:fs";
+import { join as join2, resolve } from "node:path";
+
 // src/plans.ts
 import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { basename, join } from "node:path";
@@ -512,8 +516,8 @@ function parsePlanFile(file, text) {
       break;
     }
   }
-  const value = (key) => {
-    const v = bulletValue(lines, key);
+  const value = (key2) => {
+    const v = bulletValue(lines, key2);
     return v === null ? null : nullIfEmpty(cleanCell(v));
   };
   const depends = bulletValue(lines, "Depends on");
@@ -738,10 +742,88 @@ function createTask(root, title) {
   return path;
 }
 
+// src/cache.ts
+function folderStamp(dir) {
+  let names;
+  try {
+    names = readdirSync2(dir).sort();
+  } catch {
+    return "missing";
+  }
+  return names.map((name) => {
+    try {
+      const stat = statSync2(join2(dir, name));
+      return `${name}:${stat.size}:${stat.mtimeMs}`;
+    } catch {
+      return `${name}:gone`;
+    }
+  }).join("|");
+}
+function fileStamp(path) {
+  try {
+    const stat = statSync2(path);
+    return `${stat.size}:${stat.mtimeMs}`;
+  } catch {
+    return "missing";
+  }
+}
+function key(path) {
+  const full = resolve(path).replace(/[\\/]+$/, "");
+  return process.platform === "win32" ? full.toLowerCase() : full;
+}
+var PlanCache = class {
+  constructor(load = loadPlanSet, read = (path) => readFileSync2(path, "utf8")) {
+    this.load = load;
+    this.read = read;
+  }
+  sets = /* @__PURE__ */ new Map();
+  texts = /* @__PURE__ */ new Map();
+  /** The plan set of a group root, from memory while its plans folder is unchanged. */
+  planSet(root) {
+    const dir = findPlansDir(root);
+    const stamp = dir === null ? "none" : `${dir}
+${folderStamp(dir)}`;
+    const id = key(root);
+    const hit = this.sets.get(id);
+    if (hit && hit.stamp === stamp) return hit.set;
+    const set = this.load(root);
+    this.sets.set(id, { stamp, set });
+    return set;
+  }
+  /** The text of a plan file, from memory while the file is unchanged; null when unreadable. */
+  planText(path) {
+    const stamp = fileStamp(path);
+    const id = key(path);
+    const hit = this.texts.get(id);
+    if (hit && hit.stamp === stamp) return hit.text;
+    let text;
+    try {
+      text = this.read(path);
+    } catch {
+      text = null;
+    }
+    this.texts.set(id, { stamp, text });
+    return text;
+  }
+  /** Forgets a root's plan set and the texts of the files under it; everything without a root. */
+  invalidate(root) {
+    if (root === void 0) {
+      this.sets.clear();
+      this.texts.clear();
+      return;
+    }
+    const id = key(root);
+    this.sets.delete(id);
+    for (const path of [...this.texts.keys()]) {
+      if (path === id || path.startsWith(`${id}\\`) || path.startsWith(`${id}/`)) this.texts.delete(path);
+    }
+  }
+};
+
 // src/runner.ts
 import { execFile, spawn } from "node:child_process";
 import { existsSync as existsSync2 } from "node:fs";
-import { join as join2, resolve } from "node:path";
+import { join as join3, resolve as resolve2 } from "node:path";
 import { promisify } from "node:util";
 var run = promisify(execFile);
 var OUTPUT_LIMIT = 16 * 1024 * 1024;
@@ -786,7 +868,7 @@ function variantsCommand(harnesses, prompt, platform = process.platform) {
 function worktreeFor(root, task) {
   const trimmed = root.replace(/[\\/]+$/, "");
   const name = `${task.id}-${task.slug}`;
-  return { path: join2(`${trimmed}.worktrees`, name), branch: `tasklist/${name}` };
+  return { path: join3(`${trimmed}.worktrees`, name), branch: `tasklist/${name}` };
 }
 async function isGitRepo(root, git = "git") {
   try {
@@ -798,7 +880,7 @@ async function isGitRepo(root, git = "git") {
 }
 function samePath(a, b) {
   const norm = (p) => {
-    const full = resolve(p).replace(/[\\/]+$/, "");
+    const full = resolve2(p).replace(/[\\/]+$/, "");
     return process.platform === "win32" ? full.toLowerCase() : full;
   };
   return norm(a) === norm(b);
@@ -855,7 +937,7 @@ async function findKrad(setting) {
   if (setting.trim()) candidates.push(setting.trim());
   candidates.push("krad", "krad-ade-agents");
   if (process.platform === "win32" && process.env.LOCALAPPDATA) {
-    candidates.push(join2(process.env.LOCALAPPDATA, "Programs", "Krad ADE", "krad.exe"));
+    candidates.push(join3(process.env.LOCALAPPDATA, "Programs", "Krad ADE", "krad.exe"));
   }
   for (const program of [...new Set(candidates)]) {
     try {
@@ -1016,9 +1098,13 @@ var ACTIONS = {
   quickEdit: "quick-edit",
   // edit the plan with a prompt: an agent changes the Markdown
   setStatus: "set-status",
-  // select change on the detail pane
+  // "Change status" button: the app's picker chooses the status
   filter: "filter",
   // select change of the task list filter
+  section: "section",
+  // select change of the plan section shown
+  layout: "layout",
+  // header button: side by side <-> stacked panes
   newTask: "new-task",
   refresh: "refresh",
   runNext: "run-next",
@@ -1031,7 +1117,7 @@ var ACTIONS = {
   openTab: "open-tab",
   // Tasks page: open the Tasklist tab of its group
   group: "group"
-  // Tasks page: select change to switch group
+  // Tasks page: group button, the app's picker chooses the group
 };
 var KEYS = {
   root: "root",
@@ -1046,7 +1132,11 @@ var KEYS = {
   detailTop: "detail-top",
   // the plan pane without the plan text
   plan: "detail-plan",
-  // the scroll with the plan Markdown or the quick editor
+  // the plan: the section select and the scroll with one section
+  planSections: "plan-sections",
+  // the section select
+  planScroll: "plan-scroll",
+  // the scroll with the selected section's Markdown
   tasksPaneHeader: "tasks-pane-header",
   tasksEmpty: "tasks-empty",
   // the sentence that replaces an empty list
@@ -1065,8 +1155,8 @@ var busyKey = {
   runWorktree: (id) => `${ACTIONS.runWorktree}:${id}`,
   runNext: ACTIONS.runNext
 };
-function isBusy(state, key) {
-  return state.busy?.includes(key) ?? false;
+function isBusy(state, key2) {
+  return state.busy?.includes(key2) ?? false;
 }
 var STATUS_BADGES = {
   TODO: { text: "todo", tone: "neutral" },
@@ -1098,20 +1188,23 @@ function statusBadge(task, run3) {
   }
   return STATUS_BADGES[task.status];
 }
-function stack(key, children, style = {}) {
-  return ui.flex(key, children, { direction: "column", align: "stretch", style: { gap: "md", ...style } });
+function stack(key2, children, style = {}) {
+  return ui.flex(key2, children, { direction: "column", align: "stretch", style: { gap: "md", ...style } });
 }
-function band(key, children, style = {}) {
-  return ui.flex(key, children, { direction: "row", align: "stretch", style: { gap: "md", ...style } });
+function band(key2, children, style = {}) {
+  return ui.flex(key2, children, { direction: "row", align: "stretch", style: { gap: "md", ...style } });
 }
-function iconButton(key, action, icon, tooltip, enabled = "yes") {
-  return ui.button(key, action, { icon, variant: "ghost", tooltip, enabled });
+function iconButton(key2, action, icon, tooltip, enabled = "yes") {
+  return ui.button(key2, action, { icon, variant: "ghost", tooltip, enabled });
 }
-function hrow(key, children, style = {}, justify = "start") {
-  return ui.flex(key, children, { direction: "row", align: "center", justify, style: { gap: "sm", ...style } });
+function hrow(key2, children, style = {}, justify = "start") {
+  return ui.flex(key2, children, { direction: "row", align: "center", justify, style: { gap: "sm", ...style } });
 }
-function vstack(key, children, style = {}) {
-  return ui.flex(key, children, { direction: "column", align: "start", style: { gap: "xs", ...style } });
+function flow(key2, children, style = {}, justify = "start") {
+  return ui.flex(key2, children, { direction: "row", align: "center", justify, wrap: "wrap", style: { gap: "sm", ...style } });
+}
+function vstack(key2, children, style = {}) {
+  return ui.flex(key2, children, { direction: "column", align: "start", style: { gap: "xs", ...style } });
 }
 function counts(state) {
   const tasks = state.set.tasks;
@@ -1122,9 +1215,9 @@ function counts(state) {
     blocked: tasks.filter((task) => task.status === "BLOCKED").length
   };
 }
-function doneChip(key, state) {
+function doneChip(key2, state) {
   const { done, total } = counts(state);
-  return ui.badge(key, `${done}/${total} done`, total > 0 && done === total ? "success" : "neutral");
+  return ui.badge(key2, `${done}/${total} done`, total > 0 && done === total ? "success" : "neutral");
 }
 function filteredTasks(state) {
   const tasks = state.set.tasks;
@@ -1144,16 +1237,17 @@ function filteredTasks(state) {
 function metaLine(task) {
   return [task.priority, task.effort, task.dependsOn.length > 0 ? `after ${task.dependsOn.join(", ")}` : null].filter(Boolean).join(" \xB7 ");
 }
-var PANE_W = 440;
+var PANE_W = 380;
+var STACK_TASKS_H = 280;
 var PANE_PAD = 12;
 var APP_ROW_PAD_X = 8;
 var ROW_BODY_W = PANE_W - 2 * PANE_PAD - 2 * APP_ROW_PAD_X;
 var ROW_PAD = 8;
 var ROW_GAP = 8;
 var ROW_LEAD_W = 36;
-var ROW_STATUS_W = 104;
+var ROW_STATUS_W = 88;
 var ROW_TEXT_W = ROW_BODY_W - 2 * ROW_PAD - ROW_LEAD_W - ROW_STATUS_W - 2 * ROW_GAP;
-var TITLE_LINE_CHARS = 32;
+var TITLE_LINE_CHARS = 26;
 function titleLines(title, max = TITLE_LINE_CHARS) {
   const words = title.replace(/`/g, "").replace(/\s+/g, " ").trim().split(" ");
   const take = (limit) => {
@@ -1184,31 +1278,28 @@ function taskRow(state, task) {
   const id = task.id;
   const [line1, line2] = titleLines(task.title);
   const titleStyle = { size: "sm", weight: "medium", color: "text_strong", wrap: "no_wrap" };
-  const node2 = ui.flex(
-    id,
-    [
-      ui.flex(
-        `${id}-lead`,
-        [ui.text(`${id}-number`, id, { size: "sm", font: "mono", color: "text_muted", wrap: "no_wrap" })],
-        { direction: "column", align: "center", style: { width: { fixed: ROW_LEAD_W } } }
-      ),
-      vstack(
-        `${id}-text`,
-        [
-          ui.text(`${id}-title`, line1, titleStyle),
-          ui.text(`${id}-title-2`, line2 || "\xA0", titleStyle),
-          ui.text(`${id}-meta`, metaLine(task) || "\xA0", { size: "xs", color: "text_muted", wrap: "no_wrap" })
-        ],
-        { width: { fixed: ROW_TEXT_W } }
-      ),
-      ui.flex(
-        `${id}-status`,
-        [...isLive2(run3) ? [ui.spinner(`${id}-spinner`)] : [], ui.badge(`${id}-badge`, badge.text, badge.tone)],
-        { direction: "row", align: "center", justify: "end", style: { gap: "xs", width: { fixed: ROW_STATUS_W } } }
-      )
-    ],
-    { direction: "row", align: "center", style: { width: { fixed: ROW_BODY_W }, padding: "sm", gap: "sm" } }
-  );
+  const children = [
+    ui.flex(
+      `${id}-lead`,
+      [ui.text(`${id}-number`, id, { size: "sm", font: "mono", color: "text_muted", wrap: "no_wrap" })],
+      { direction: "column", align: "center", style: { width: { fixed: ROW_LEAD_W } } }
+    ),
+    vstack(
+      `${id}-text`,
+      [
+        ui.text(`${id}-title`, line1, titleStyle),
+        ui.text(`${id}-title-2`, line2 || "\xA0", titleStyle),
+        ui.text(`${id}-meta`, metaLine(task) || "\xA0", { size: "xs", color: "text_muted", wrap: "no_wrap" })
+      ],
+      { width: { fixed: ROW_TEXT_W } }
+    ),
+    isLive2(run3) ? ui.spinner(`${id}-spinner`) : ui.badge(`${id}-badge`, badge.text, badge.tone)
+  ];
+  const node2 = ui.flex(id, children, {
+    direction: "row",
+    align: "center",
+    style: { width: { fixed: ROW_BODY_W }, padding: "sm", gap: "sm" }
+  });
   return { node: node2 };
 }
 function taskRows(state, start = 0, end = Number.MAX_SAFE_INTEGER) {
@@ -1222,7 +1313,14 @@ function header(state, page = null) {
   ];
   const group = page?.groups.find((g) => g.value === state.set.root);
   if (page !== null && page.groups.length > 1 && group !== void 0) {
-    left.push(ui.select("header-group", ACTIONS.group, page.groups, group.value));
+    left.push(
+      ui.button("header-group", ACTIONS.group, {
+        label: group.label,
+        icon: "chevron-down",
+        variant: "ghost",
+        tooltip: "Switch group"
+      })
+    );
   } else {
     left.push(
       ui.text("header-folder", basename2(state.set.root) || state.set.root, {
@@ -1238,11 +1336,18 @@ function header(state, page = null) {
     if (running > 0) left.push(ui.badge("header-running", `${running} running`, "info"));
     if (blocked > 0) left.push(ui.badge("header-blocked", `${blocked} blocked`, "error"));
   }
+  const stacked = state.layout === "stack";
   const toolButtons = [
     iconButton("toolbar-new", ACTIONS.newTask, "add", "New task"),
     iconButton("toolbar-generate", ACTIONS.generate, "magic", "Write plans with /improve"),
     iconButton("toolbar-reconcile", ACTIONS.reconcile, "repeat", "Reconcile plans with /improve"),
-    iconButton("toolbar-refresh", ACTIONS.refresh, "refresh", "Refresh")
+    iconButton("toolbar-refresh", ACTIONS.refresh, "refresh", "Refresh"),
+    iconButton(
+      "toolbar-layout",
+      ACTIONS.layout,
+      stacked ? "exchange" : "list-view",
+      stacked ? "Side by side" : "Stack the panes"
+    )
   ];
   if (page !== null) toolButtons.push(iconButton("toolbar-open-tab", ACTIONS.openTab, "open-external", "Open in a tab"));
   const tools = hrow("header-tools", toolButtons, { padding: "xs", gap: "xs", radius: "full", border: "border" });
@@ -1264,9 +1369,9 @@ function header(state, page = null) {
       tooltip: "Run every TODO task one after another"
     })
   ];
-  return hrow(
+  return flow(
     KEYS.header,
-    [hrow("header-left", left), hrow("header-right", right, { gap: "md" })],
+    [flow("header-left", left), flow("header-right", right)],
     { width: "fill", gap: "md" },
     "between"
   );
@@ -1282,7 +1387,7 @@ function sessionStrip(state) {
   if (session.message) {
     children.push(ui.text("session-message", session.message, { size: "sm", color: "text_muted", wrap: "wrap" }));
   }
-  return hrow(KEYS.session, children, {
+  return flow(KEYS.session, children, {
     width: "fill",
     background: "panel",
     border: "border",
@@ -1324,12 +1429,8 @@ function tasksPane(state) {
     state.filter
   );
   const list = shown > 0 ? ui.list(KEYS.tasks, shown, "single") : ui.text(KEYS.tasksEmpty, FILTER_EMPTY[state.filter], { size: "sm", color: "text_muted", wrap: "wrap" });
-  return stack(KEYS.tasksPane, [tasksPaneHeader(state), filter, list], {
-    ...PANEL,
-    width: { fixed: PANE_W },
-    padding: "md"
-    // PANE_PAD
-  });
+  const size = state.layout === "stack" ? { width: "fill", height: { fixed: STACK_TASKS_H } } : { width: { fixed: PANE_W } };
+  return stack(KEYS.tasksPane, [tasksPaneHeader(state), filter, list], { ...PANEL, ...size, padding: "md" });
 }
 function planBody(text) {
   const lines = text.replace(/^\s*#[ \t]+Plan[ \t]+\d+[^\n]*(\r?\n)?/i, "").split("\n");
@@ -1341,17 +1442,56 @@ function planBody(text) {
   }
   return lines.join("\n").replace(/^(\s*\r?\n)+/, "");
 }
+var WHOLE_PLAN = "Whole plan";
+var OVERVIEW = "Overview";
+function planSections(text) {
+  const sections = [];
+  let title = OVERVIEW;
+  let lines = [];
+  let fence = null;
+  const flush = () => {
+    const body = lines.join("\n").replace(/^(\s*\r?\n)+/, "").replace(/\s+$/, "");
+    if (body || title !== OVERVIEW) sections.push({ title, text: body });
+  };
+  for (const line of planBody(text).split("\n")) {
+    const marker = /^[ \t]*(```|~~~)/.exec(line)?.[1];
+    if (marker) fence = fence === null ? marker : fence === marker ? null : fence;
+    const heading = fence === null && !marker ? /^##[ \t]+(.+?)[ \t#]*\r?$/.exec(line) : null;
+    if (heading) {
+      flush();
+      title = heading[1].replace(/`/g, "").trim();
+      lines = [];
+    } else {
+      lines.push(line);
+    }
+  }
+  flush();
+  return sections;
+}
+function shownSection(state, sections) {
+  if (state.section === WHOLE_PLAN && state.planText !== null) return { title: WHOLE_PLAN, text: planBody(state.planText) };
+  return sections.find((s) => s.title === state.section) ?? sections[0] ?? null;
+}
+function sectionValue(index) {
+  return `s${index}`;
+}
+function sectionTitle(planText, value) {
+  if (value === WHOLE_PLAN) return WHOLE_PLAN;
+  const index = /^s(\d+)$/.exec(value)?.[1];
+  if (index === void 0 || planText === null) return null;
+  return planSections(planText)[Number(index)]?.title ?? null;
+}
 function relativePath(root, file) {
   const rel = relative(root, file);
   return rel && !rel.startsWith("..") ? rel.split("\\").join("/") : file;
 }
-function emptyState(key, text, buttons, style) {
+function emptyState(key2, text, buttons, style) {
   const children = [
-    ui.icon(`${key}-icon`, "tasks", "text_muted"),
-    ui.text(`${key}-text`, text, { size: "sm", color: "text_subtle", wrap: "wrap" })
+    ui.icon(`${key2}-icon`, "tasks", "text_muted"),
+    ui.text(`${key2}-text`, text, { size: "sm", color: "text_subtle", wrap: "wrap" })
   ];
-  if (buttons.length > 0) children.push(hrow(`${key}-buttons`, buttons));
-  return ui.flex(key, children, {
+  if (buttons.length > 0) children.push(flow(`${key2}-buttons`, buttons, {}, "center"));
+  return ui.flex(key2, children, {
     direction: "column",
     align: "center",
     justify: "center",
@@ -1389,46 +1529,26 @@ function detailTop(state, task) {
       enabled: starting ? "no" : "yes"
     })
   ];
-  const actions = hrow(
-    "detail-actions",
-    [
-      hrow("detail-buttons", [
-        ...runControl,
-        ui.button("detail-run-worktree", ACTIONS.runWorktree, {
-          label: "Run in worktree",
-          icon: "git-branch",
-          variant: "secondary",
-          enabled: live || starting ? "no" : "yes"
-        }),
-        ui.button("detail-variants", ACTIONS.variants, { label: "Compare agents", icon: "exchange", variant: "ghost" })
-      ]),
-      hrow(
-        "detail-editors",
-        [
-          iconButton("detail-edit", ACTIONS.edit, "pencil", "Edit in editor"),
-          iconButton("detail-quick-edit", ACTIONS.quickEdit, "magic", "Edit with a prompt")
-        ],
-        { gap: "xs" }
-      )
-    ],
-    { width: "fill" },
-    "between"
-  );
-  const statusRow = hrow("detail-status-row", [
-    ui.flex("detail-status-label-box", [ui.text("detail-status-label", "Status", { size: "xs", color: "text_muted" })], {
-      direction: "row",
-      align: "center",
-      style: { width: { fixed: 64 } }
+  const actions = flow("detail-actions", [
+    ...runControl,
+    ui.button("detail-run-worktree", ACTIONS.runWorktree, {
+      label: "Run in worktree",
+      icon: "git-branch",
+      variant: "secondary",
+      enabled: live || starting ? "no" : "yes"
     }),
-    ui.select(
-      "detail-status",
-      ACTIONS.setStatus,
-      TASK_STATUSES.map((status) => ({ value: status, label: status })),
-      task.status
-    )
+    ui.button("detail-variants", ACTIONS.variants, { label: "Compare agents", icon: "exchange", variant: "ghost" }),
+    iconButton("detail-edit", ACTIONS.edit, "note", "Edit in editor"),
+    iconButton("detail-quick-edit", ACTIONS.quickEdit, "magic", "Edit with a prompt")
+  ]);
+  const plan = STATUS_BADGES[task.status];
+  const statusRow = flow("detail-status-row", [
+    ui.text("detail-status-label", "Status", { size: "xs", color: "text_muted", wrap: "no_wrap" }),
+    ui.badge("detail-status-badge", plan.text, plan.tone),
+    ui.button("detail-status", ACTIONS.setStatus, { label: "Change status", icon: "pencil", variant: "ghost" })
   ]);
   const heading = [
-    hrow("detail-eyebrow", [
+    flow("detail-eyebrow", [
       ui.text("detail-plan-id", `Plan ${task.id}`, { size: "xs", weight: "medium", color: "text_muted", wrap: "no_wrap" }),
       ui.text("detail-file-path", relativePath(state.set.root, task.file), {
         size: "xs",
@@ -1439,7 +1559,7 @@ function detailTop(state, task) {
     ]),
     ui.text("detail-title", task.title, { size: "lg", weight: "bold", color: "text_strong", wrap: "wrap" })
   ];
-  if (chips.length > 0) heading.push(hrow("detail-chips", chips, { gap: "sm" }));
+  if (chips.length > 0) heading.push(flow("detail-chips", chips));
   const children = [vstack("detail-heading", heading, { gap: "sm", width: "fill" }), actions, statusRow];
   if (run3 !== null) {
     children.push(
@@ -1457,14 +1577,45 @@ function detailTop(state, task) {
   }
   return stack(KEYS.detailTop, children);
 }
-function planPane(state) {
-  let children;
+function planScroll(state) {
+  let child;
   if (state.planText === null) {
-    children = [ui.text("detail-unreadable", "Cannot read the plan file.", { size: "sm", color: "text_muted" })];
+    child = ui.text("detail-unreadable", "Cannot read the plan file.", { size: "sm", color: "text_muted" });
   } else {
-    children = [ui.markdown("plan-md", planBody(state.planText))];
+    const section = shownSection(state, planSections(state.planText));
+    child = section === null || section.text === "" ? ui.text("plan-empty", "Nothing written here yet.", { size: "sm", color: "text_muted" }) : ui.markdown("plan-md", section.text);
   }
-  return { key: KEYS.plan, type: "scroll", direction: "column", style: { height: "fill", padding: "xs", gap: "md" }, children };
+  return {
+    key: KEYS.planScroll,
+    type: "scroll",
+    direction: "column",
+    style: { height: "fill", padding: "xs" },
+    children: [child]
+  };
+}
+function sectionSelect(state) {
+  if (state.planText === null) return null;
+  const sections = planSections(state.planText);
+  if (sections.length < 2) return null;
+  const shown = shownSection(state, sections);
+  const options2 = sections.map((s, index2) => ({ value: sectionValue(index2), label: s.title }));
+  options2.push({ value: WHOLE_PLAN, label: WHOLE_PLAN });
+  const index = sections.findIndex((s) => s.title === shown?.title);
+  const value = shown?.title === WHOLE_PLAN ? WHOLE_PLAN : sectionValue(Math.max(0, index));
+  return ui.select(KEYS.planSections, ACTIONS.section, options2, value);
+}
+function planPane(state) {
+  const select = sectionSelect(state);
+  return stack(KEYS.plan, select === null ? [planScroll(state)] : [select, planScroll(state)], {
+    height: "fill",
+    gap: "sm"
+  });
+}
+function planSignature(state) {
+  if (state.planText === null) return "";
+  const sections = planSections(state.planText);
+  const shown = shownSection(state, sections);
+  return JSON.stringify([sections.map((s) => s.title), shown?.title ?? "", shown?.text ?? ""]);
 }
 function taskDetail(state) {
   const task = selectedTask(state);
@@ -1498,7 +1649,9 @@ function tasklistView(state, page = null) {
       )
     );
   } else {
-    children.push(band(KEYS.body, [tasksPane(state), taskDetail(state)], { width: "fill", height: "fill", gap: "lg" }));
+    const panes = [tasksPane(state), taskDetail(state)];
+    const style = { width: "fill", height: "fill", gap: "lg" };
+    children.push(state.layout === "stack" ? stack(KEYS.body, panes, style) : band(KEYS.body, panes, style));
   }
   return stack(KEYS.root, children, { width: "fill", height: "fill", padding: "lg", gap: "lg" });
 }
@@ -1516,7 +1669,8 @@ function viewShape(state) {
     state.session.active,
     state.set.problems.length > 0,
     filteredTasks(state).length > 0,
-    task?.id ?? ""
+    task?.id ?? "",
+    state.layout ?? "side"
   ].join("|");
 }
 
@@ -1547,7 +1701,7 @@ function options(values) {
   };
 }
 function newUi() {
-  return { selected: null, filter: "all" };
+  return { selected: null, filter: "all", layout: "side", section: null };
 }
 var current = DEFAULTS;
 var runs = [];
@@ -1561,15 +1715,15 @@ function failure(error) {
 }
 function samePath2(a, b) {
   const norm = (p) => {
-    const full = resolve2(p).replace(/[\\/]+$/, "");
+    const full = resolve3(p).replace(/[\\/]+$/, "");
     return process.platform === "win32" ? full.toLowerCase() : full;
   };
   return norm(a) === norm(b);
 }
 function isInside(path, folder) {
-  const rel = relative2(resolve2(folder), resolve2(path));
+  const rel = relative2(resolve3(folder), resolve3(path));
   if (rel === "") return true;
-  if (rel.startsWith("..") || resolve2(rel) === rel) return false;
+  if (rel.startsWith("..") || resolve3(rel) === rel) return false;
   return process.platform === "win32" ? !/^[a-zA-Z]:/.test(rel) : true;
 }
 function runsOf(root) {
@@ -1579,7 +1733,7 @@ function liveRun(root, taskId) {
   return runs.find((r) => r.taskId === taskId && samePath2(r.root, root) && isLive(r));
 }
 function sessionOf(root) {
-  for (const [key, session] of sessions) if (samePath2(key, root)) return session;
+  for (const [key2, session] of sessions) if (samePath2(key2, root)) return session;
   return void 0;
 }
 function sessionInfo(root) {
@@ -1594,12 +1748,10 @@ function sessionInfo(root) {
     message: null
   };
 }
-function readText2(path) {
-  try {
-    return readFileSync2(path, "utf8");
-  } catch {
-    return null;
-  }
+var plans = new PlanCache();
+function writeStatusOf(root, id, status, note) {
+  writeStatus(loadPlanSet(root), id, status, note);
+  plans.invalidate(root);
 }
 var PAGE = "tasks";
 var TAB = "tasklist";
@@ -1607,33 +1759,35 @@ var openViews = /* @__PURE__ */ new Map();
 var uiStates = /* @__PURE__ */ new Map();
 var pageChoice = null;
 function normPath(p) {
-  const full = resolve2(p).replace(/[\\/]+$/, "");
+  const full = resolve3(p).replace(/[\\/]+$/, "");
   return process.platform === "win32" ? full.toLowerCase() : full;
 }
 function refId(ref) {
   return `${ref.view}\0${ref.instance ?? ""}`;
 }
 function uiOf(view, root) {
-  const key = `${view}\0${normPath(root)}`;
-  let ui2 = uiStates.get(key);
+  const key2 = `${view}\0${normPath(root)}`;
+  let ui2 = uiStates.get(key2);
   if (!ui2) {
     ui2 = newUi();
-    uiStates.set(key, ui2);
+    uiStates.set(key2, ui2);
   }
   return ui2;
 }
-function viewState(view, root, withPlan = true) {
-  const set = loadPlanSet(root);
+function viewState(view, root) {
+  const set = plans.planSet(root);
   const ui2 = uiOf(view, root);
   const task = ui2.selected === null ? void 0 : set.tasks.find((t) => t.id === ui2.selected);
   return {
     set,
     runs: runsOf(root),
     selected: ui2.selected,
-    planText: withPlan && task ? readText2(task.file) : null,
+    planText: task ? plans.planText(task.file) : null,
     session: sessionInfo(root),
     filter: ui2.filter,
-    busy: [...busy.get(normPath(root)) ?? []]
+    busy: [...busy.get(normPath(root)) ?? []],
+    layout: ui2.layout,
+    section: ui2.section
   };
 }
 async function resolvePage(context) {
@@ -1646,7 +1800,7 @@ async function openViewOf(ref, context, reresolve) {
   const id = refId(ref);
   let open = openViews.get(id);
   if (!open) {
-    open = { ref: { view: ref.view, instance: ref.instance }, root: null, groups: [], shape: null, planText: null };
+    open = { ref: { view: ref.view, instance: ref.instance }, root: null, groups: [], shape: null, planSig: "", state: null };
     openViews.set(id, open);
     reresolve = true;
     if (ref.view === PAGE) Object.assign(open, await resolvePage(context));
@@ -1665,7 +1819,8 @@ function chromeOf(open) {
 }
 function remember(open, state) {
   open.shape = state === null ? null : viewShape(state);
-  open.planText = state?.planText ?? null;
+  open.planSig = state === null ? "" : planSignature(state);
+  open.state = state;
 }
 function build(open) {
   if (open.root === null) {
@@ -1701,9 +1856,9 @@ function refreshOpen(open, context) {
   const task = state.selected === null ? void 0 : state.set.tasks.find((t) => t.id === state.selected);
   if (task !== void 0) {
     patches.push(patch.replace(detailTop(state, task)));
-    if (state.planText !== open.planText) patches.push(patch.replace(planPane(state)));
+    if (planSignature(state) !== open.planSig) patches.push(patch.replace(planPane(state)));
   }
-  open.planText = state.planText;
+  remember(open, state);
   patchOpen(open, context, patches);
 }
 function refreshRoot(root, context) {
@@ -1732,27 +1887,27 @@ function refreshDetail(open, context) {
 }
 function refreshList(open, context) {
   if (open.root === null) return;
-  const state = viewState(open.ref.view, open.root, false);
-  if (open.shape !== null) open.shape = viewShape({ ...state, planText: open.planText });
+  const state = viewState(open.ref.view, open.root);
+  remember(open, state);
   patchOpen(open, context, [patch.replace(tasksPane(state)), patch.invalidate(KEYS.tasks)]);
 }
 var busy = /* @__PURE__ */ new Map();
 function busyOf(root) {
-  const key = normPath(root);
-  let set = busy.get(key);
+  const key2 = normPath(root);
+  let set = busy.get(key2);
   if (!set) {
     set = /* @__PURE__ */ new Set();
-    busy.set(key, set);
+    busy.set(key2, set);
   }
   return set;
 }
-async function whileBusy(root, key, context, action) {
-  busyOf(root).add(key);
+async function whileBusy(root, key2, context, action) {
+  busyOf(root).add(key2);
   refreshRoot(root, context);
   try {
     return await action();
   } finally {
-    busyOf(root).delete(key);
+    busyOf(root).delete(key2);
     refreshRoot(root, context);
   }
 }
@@ -1762,7 +1917,7 @@ async function openTab(root, context) {
   await context.app.openView({ view: TAB, instance, title: `Tasklist \xB7 ${basename3(root)}` });
 }
 function findTask(root, id) {
-  const set = loadPlanSet(root);
+  const set = plans.planSet(root);
   const task = set.tasks.find((t) => t.id === id);
   return task ? { set, task } : null;
 }
@@ -1784,8 +1939,8 @@ async function rootFor(target, context) {
     const folder = dirname(target.path);
     const parent = dirname(folder);
     if (basename3(target.path).toLowerCase() === "readme.md") {
-      const plans = findPlansDir(parent);
-      if (plans !== null && samePath2(plans, folder)) return parent;
+      const plans2 = findPlansDir(parent);
+      if (plans2 !== null && samePath2(plans2, folder)) return parent;
     }
     const group = containing(target.path);
     if (group !== null) return group;
@@ -1838,7 +1993,7 @@ async function runTask(root, task, mode, context) {
       branch = created.branch;
     }
     const planPath = planPathOf(root, task.file);
-    writeStatus(loadPlanSet(root), task.id, "IN PROGRESS", null);
+    writeStatusOf(root, task.id, "IN PROGRESS", null);
     statusWritten = true;
     const harness = current.harness;
     const terminal = await app.openTerminal({
@@ -1868,7 +2023,7 @@ async function runTask(root, task, mode, context) {
     app.toast(`Task ${task.id} did not start: ${failure(error)}`, "error");
     if (statusWritten) {
       try {
-        writeStatus(loadPlanSet(root), task.id, previous.status, previous.note);
+        writeStatusOf(root, task.id, previous.status, previous.note);
       } catch (restoreError) {
         app.log("warn", `could not restore the status of ${task.id}: ${failure(restoreError)}`);
       }
@@ -1988,7 +2143,7 @@ function finishRun(record, context) {
   if (record.mode === "worktree" && verdict !== "needs-review") {
     const mirrored = status === "DONE" ? [note, `in worktree ${record.branch ?? record.worktree}`].filter(Boolean).join(" \u2014 ") : note;
     try {
-      writeStatus(loadPlanSet(root), record.taskId, status, mirrored || null);
+      writeStatusOf(root, record.taskId, status, mirrored || null);
     } catch (error) {
       app.log("warn", `could not mirror the status of ${record.taskId}: ${failure(error)}`);
     }
@@ -2013,7 +2168,7 @@ async function startAutoRun(root, context) {
     app.toast("An auto-run is already going in this group", "info");
     return;
   }
-  const set = loadPlanSet(root);
+  const set = plans.planSet(root);
   if (runnableTasks(set.tasks).length === 0) {
     app.toast("Nothing to run: every TODO task waits on another one", "info");
     return;
@@ -2056,7 +2211,7 @@ var sessionParallel = /* @__PURE__ */ new WeakMap();
 function endSession(root, context, message, tone) {
   const session = sessionOf(root);
   if (!session) return;
-  for (const [key, value] of sessions) if (value === session) sessions.delete(key);
+  for (const [key2, value] of sessions) if (value === session) sessions.delete(key2);
   context.app.progress({ token: session.token, state: "end" });
   if (sessions.size === 0) context.app.setTitlebarItem({ item: "tasklist", active: false });
   context.app.toast(message, tone);
@@ -2080,7 +2235,7 @@ async function advanceOnce(root, session, context) {
   }
   const maxParallel = sessionParallel.get(session) ?? current.maxParallel;
   const mode = maxParallel === 1 ? "here" : "worktree";
-  const launches = nextLaunches(runnableTasks(loadPlanSet(root).tasks), runsOf(root), session.finished, maxParallel);
+  const launches = nextLaunches(runnableTasks(plans.planSet(root).tasks), runsOf(root), session.finished, maxParallel);
   for (const task of launches) {
     if (sessionOf(root) !== session) return;
     const started = await runTask(root, task, mode, context);
@@ -2095,7 +2250,7 @@ async function advanceOnce(root, session, context) {
     endSession(root, context, `Auto-run stopped: task ${first.id} ${first.why}`, "warning");
     return;
   }
-  if (sessionOver(runnableTasks(loadPlanSet(root).tasks), runsOf(root), session.finished, maxParallel)) {
+  if (sessionOver(runnableTasks(plans.planSet(root).tasks), runsOf(root), session.finished, maxParallel)) {
     endSession(root, context, `Auto-run finished: ${session.done}/${session.total} tasks done`, "success");
     return;
   }
@@ -2117,7 +2272,7 @@ async function stopAutoRun(root, context) {
   endSession(root, context, "Auto-run stopped. Agents already running keep working.", "info");
 }
 async function runNext(root, context) {
-  const task = runnableTasks(loadPlanSet(root).tasks).find((t) => !liveRun(root, t.id));
+  const task = runnableTasks(plans.planSet(root).tasks).find((t) => !liveRun(root, t.id));
   if (!task) {
     context.app.toast("Nothing to run: every TODO task waits on another one", "info");
     return;
@@ -2159,6 +2314,7 @@ async function onViewEvent(event, ref, context) {
   try {
     if (event.kind === "choose" && event.node === KEYS.tasks) {
       ui2.selected = event.items[0] ?? null;
+      ui2.section = null;
       refreshDetail(open, context);
       return;
     }
@@ -2180,6 +2336,13 @@ async function onViewEvent(event, ref, context) {
           return await startAutoRun(root, context);
         case ACTIONS.stop:
           return await stopAutoRun(root, context);
+        case ACTIONS.group:
+          return await switchGroup(open, context);
+        case ACTIONS.setStatus:
+          return await changeStatus(root, ui2, context);
+        case ACTIONS.layout:
+          ui2.layout = ui2.layout === "stack" ? "side" : "stack";
+          return replaceOpen(open, context);
         case ACTIONS.run:
         case ACTIONS.runWorktree:
         case ACTIONS.variants:
@@ -2190,35 +2353,65 @@ async function onViewEvent(event, ref, context) {
       }
       return;
     }
-    if (event.kind === "select" && event.action === ACTIONS.group) {
-      if (open.ref.view !== PAGE) return;
-      pageChoice = event.value;
-      await openViewOf(open.ref, context, true);
-      uiOf(open.ref.view, open.root ?? "").filter = "all";
-      return replaceOpen(open, context);
+    if (event.kind === "select" && event.action === ACTIONS.section) {
+      const state = viewState(open.ref.view, root);
+      const title = sectionTitle(state.planText, event.value);
+      if (title === null) return;
+      ui2.section = title;
+      const next = { ...state, section: title };
+      remember(open, next);
+      patchOpen(open, context, [patch.replace(planScroll(next))]);
+      return;
     }
     if (event.kind === "select" && event.action === ACTIONS.filter) {
       if (FILTERS.includes(event.value)) ui2.filter = event.value;
       return refreshList(open, context);
     }
-    if (event.kind === "select" && event.action === ACTIONS.setStatus) {
-      if (ui2.selected === null) return;
-      const status = event.value;
-      if (!TASK_STATUSES.includes(status)) return;
-      let note = null;
-      if (status === "BLOCKED" || status === "REJECTED") {
-        note = await app.input({ title: "Reason (one line)" });
-        if (note === null) return refreshRoot(root, context);
-        note = note.trim() || null;
-      }
-      writeStatus(loadPlanSet(root), ui2.selected, status, note);
-      refreshAll(context);
-      return;
-    }
   } catch (error) {
     app.toast(failure(error), "error");
     refreshRoot(root, context);
   }
+}
+async function switchGroup(open, context) {
+  if (open.ref.view !== PAGE || open.groups.length < 2) return;
+  const picked = await context.app.pick({
+    title: "Show the tasks of which group?",
+    items: open.groups.map((g) => ({ value: g.root, label: g.name, detail: g.root })),
+    mode: "one"
+  });
+  const root = picked?.[0];
+  if (!root) return;
+  pageChoice = root;
+  await openViewOf(open.ref, context, true);
+  if (open.root !== null) uiOf(open.ref.view, open.root).filter = "all";
+  replaceOpen(open, context);
+}
+async function changeStatus(root, ui2, context) {
+  if (ui2.selected === null) return;
+  const found = findTask(root, ui2.selected);
+  if (!found) return;
+  const { task } = found;
+  const picked = await context.app.pick({
+    title: `Status of plan ${task.id}`,
+    items: TASK_STATUSES.map((status2) => ({
+      value: status2,
+      label: status2,
+      detail: status2 === task.status ? "current" : null
+    })),
+    mode: "one"
+  });
+  const status = picked?.[0];
+  if (status === void 0 || !TASK_STATUSES.includes(status)) return;
+  let note = null;
+  if (status === "BLOCKED" || status === "REJECTED") {
+    note = await context.app.input({ title: "Reason (one line)" });
+    if (note === null) return;
+    note = note.trim() || null;
+  } else if (status === task.status) {
+    return;
+  }
+  writeStatusOf(root, task.id, status, note);
+  refreshAll(context);
 }
 async function editWithPrompt(root, task, context) {
   const { app } = context;
@@ -2246,8 +2439,8 @@ var plansWatches = /* @__PURE__ */ new Map();
 function watchPlans(root, context) {
   const dir = findPlansDir(root);
   if (dir === null) return;
-  const key = normPath(root);
-  const existing = plansWatches.get(key);
+  const key2 = normPath(root);
+  const existing = plansWatches.get(key2);
   if (existing) {
     existing.expiry.refresh();
     return;
@@ -2258,22 +2451,23 @@ function watchPlans(root, context) {
         if (entry.debounce) clearTimeout(entry.debounce);
         entry.debounce = setTimeout(() => {
           entry.debounce = null;
+          plans.invalidate(root);
           refreshRoot(root, context);
         }, 300);
       }),
       debounce: null,
-      expiry: setTimeout(() => unwatchPlans(key), PLANS_WATCH_MS)
+      expiry: setTimeout(() => unwatchPlans(key2), PLANS_WATCH_MS)
     };
-    entry.watcher.on("error", () => unwatchPlans(key));
-    plansWatches.set(key, entry);
+    entry.watcher.on("error", () => unwatchPlans(key2));
+    plansWatches.set(key2, entry);
   } catch (error) {
     context.app.log("warn", `cannot watch ${dir}: ${failure(error)}`);
   }
 }
-function unwatchPlans(key) {
-  const entry = plansWatches.get(key);
+function unwatchPlans(key2) {
+  const entry = plansWatches.get(key2);
   if (!entry) return;
-  plansWatches.delete(key);
+  plansWatches.delete(key2);
   if (entry.debounce) clearTimeout(entry.debounce);
   clearTimeout(entry.expiry);
   entry.watcher.close();
@@ -2285,6 +2479,7 @@ async function newTask(root, context, open = null) {
   });
   if (title === null || !title.trim()) return;
   const file = createTask(root, title);
+  plans.invalidate(root);
   if (open !== null) {
     const ui2 = uiOf(open.ref.view, root);
     ui2.selected = basename3(file).slice(0, 3);
@@ -2338,6 +2533,7 @@ async function setStatusTool(args, root, context) {
   if (!set.tasks.some((t) => t.id === id)) return failed(`No task ${id} in ${set.dir}.`);
   const line = typeof note === "string" ? note.replace(/[\r\n]+/g, " ").trim() || null : null;
   writeStatus(set, id, status, line);
+  plans.invalidate(where);
   refreshAll(context);
   return `Task ${id} is now ${status}.`;
 }
@@ -2346,7 +2542,8 @@ async function listRows(params, context) {
   if (params.node !== KEYS.tasks) return NO_ROWS;
   const open = await openViewOf(params, context, false);
   if (open.root === null) return NO_ROWS;
-  return { kind: "list", rows: taskRows(viewState(open.ref.view, open.root, false), params.start, params.end) };
+  open.state ??= viewState(open.ref.view, open.root);
+  return { kind: "list", rows: taskRows(open.state, params.start, params.end) };
 }
 function closeView(ref) {
   const open = openViews.get(refId(ref));
@@ -2382,7 +2579,7 @@ createExtension({
   onShutdown() {
     watcher?.stop();
     watcher = null;
-    for (const key of [...plansWatches.keys()]) unwatchPlans(key);
+    for (const key2 of [...plansWatches.keys()]) unwatchPlans(key2);
   },
   onSettingsChanged(values, context) {
     const before = current.kradPath;
@@ -2395,6 +2592,7 @@ createExtension({
   },
   onWorkspaceEvent(event, context) {
     if (event.kind !== "file_saved") return;
+    plans.invalidate();
     const inPlans = /[\\/]plans[\\/]/i.test(event.path);
     for (const open of openViews.values()) {
       if (open.ref.view === PAGE && inPlans) {
