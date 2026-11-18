@@ -1142,6 +1142,15 @@ function filteredTasks(state) {
 function metaLine(task) {
   return [task.priority, task.effort, task.dependsOn.length > 0 ? `after ${task.dependsOn.join(", ")}` : null].filter(Boolean).join(" \xB7 ");
 }
+var PANE_W = 440;
+var PANE_PAD = 12;
+var APP_ROW_PAD_X = 8;
+var ROW_BODY_W = PANE_W - 2 * PANE_PAD - 2 * APP_ROW_PAD_X;
+var ROW_PAD = 8;
+var ROW_GAP = 8;
+var ROW_LEAD_W = 36;
+var ROW_STATUS_W = 104;
+var ROW_TEXT_W = ROW_BODY_W - 2 * ROW_PAD - ROW_LEAD_W - ROW_STATUS_W - 2 * ROW_GAP;
 var TITLE_LINE_CHARS = 32;
 function titleLines(title, max = TITLE_LINE_CHARS) {
   const words = title.replace(/`/g, "").replace(/\s+/g, " ").trim().split(" ");
@@ -1176,29 +1185,27 @@ function taskRow(state, task) {
   const node2 = ui.flex(
     id,
     [
-      hrow(
-        `${id}-left`,
+      ui.flex(
+        `${id}-lead`,
+        [ui.text(`${id}-number`, id, { size: "sm", font: "mono", color: "text_muted", wrap: "no_wrap" })],
+        { direction: "column", align: "center", style: { width: { fixed: ROW_LEAD_W } } }
+      ),
+      vstack(
+        `${id}-text`,
         [
-          ui.flex(
-            `${id}-lead`,
-            [ui.text(`${id}-number`, id, { size: "sm", font: "mono", color: "text_muted", wrap: "no_wrap" })],
-            { direction: "column", align: "center", style: { width: { fixed: 36 } } }
-          ),
-          vstack(`${id}-text`, [
-            ui.text(`${id}-title`, line1, titleStyle),
-            ui.text(`${id}-title-2`, line2 || "\xA0", titleStyle),
-            ui.text(`${id}-meta`, metaLine(task) || "\xA0", { size: "xs", color: "text_muted", wrap: "no_wrap" })
-          ])
+          ui.text(`${id}-title`, line1, titleStyle),
+          ui.text(`${id}-title-2`, line2 || "\xA0", titleStyle),
+          ui.text(`${id}-meta`, metaLine(task) || "\xA0", { size: "xs", color: "text_muted", wrap: "no_wrap" })
         ],
-        { gap: "sm" }
+        { width: { fixed: ROW_TEXT_W } }
       ),
       ui.flex(
         `${id}-status`,
         [...isLive2(run3) ? [ui.spinner(`${id}-spinner`)] : [], ui.badge(`${id}-badge`, badge.text, badge.tone)],
-        { direction: "row", align: "center", justify: "end", style: { gap: "xs", width: { fixed: 104 } } }
+        { direction: "row", align: "center", justify: "end", style: { gap: "xs", width: { fixed: ROW_STATUS_W } } }
       )
     ],
-    { direction: "row", align: "center", justify: "between", style: { width: "fill", padding: "sm", gap: "sm" } }
+    { direction: "row", align: "center", style: { width: { fixed: ROW_BODY_W }, padding: "sm", gap: "sm" } }
   );
   return { node: node2 };
 }
@@ -1317,8 +1324,9 @@ function tasksPane(state) {
   const list = shown > 0 ? ui.list(KEYS.tasks, shown, "single") : ui.text(KEYS.tasksEmpty, FILTER_EMPTY[state.filter], { size: "sm", color: "text_muted", wrap: "wrap" });
   return stack(KEYS.tasksPane, [tasksPaneHeader(state), filter, list], {
     ...PANEL,
-    width: { fixed: 440 },
+    width: { fixed: PANE_W },
     padding: "md"
+    // PANE_PAD
   });
 }
 function planBody(text) {

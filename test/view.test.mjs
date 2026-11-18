@@ -3,6 +3,15 @@ import assert from "node:assert/strict";
 import {
   ACTIONS,
   busyKey,
+  APP_ROW_PAD_X,
+  PANE_PAD,
+  PANE_W,
+  ROW_BODY_W,
+  ROW_GAP,
+  ROW_LEAD_W,
+  ROW_PAD,
+  ROW_STATUS_W,
+  ROW_TEXT_W,
   KEYS,
   filteredTasks,
   header,
@@ -97,7 +106,7 @@ test("the tab root fills its tab and the tasks pane holds a single-selection lis
   assert.equal(body.style.gap, "lg");
   // Left pane: fixed width, stretched by the body row; right pane grows sideways with height fill.
   const pane = find(view, (n) => n.key === KEYS.tasksPane);
-  assert.deepEqual(pane.style.width, { fixed: 440 });
+  assert.deepEqual(pane.style.width, { fixed: PANE_W });
   assert.notEqual(pane.style.height, "fill");
   assert.equal(pane.style.padding, "md");
   const detail = find(view, (n) => n.key === KEYS.detail);
@@ -135,20 +144,19 @@ test("taskRows returns one uniform row per task: id, title, one status mark", ()
   for (const id of ["001", "003", "004"]) assert.ok(!find(byKey[id].node, (n) => n.type === "spinner"), id);
   for (const row of rows) {
     assert.equal(row.menu, undefined);
-    // Row body: full width (one highlight width for all rows), centred, status at the far right.
+    // Row body: one fixed width for all rows (the app sizes rows to their content), centred.
     assert.equal(row.node.align, "center");
-    assert.equal(row.node.justify, "between");
-    assert.equal(row.node.style.width, "fill");
+    assert.deepEqual(row.node.style.width, { fixed: ROW_BODY_W });
     assert.equal(row.node.style.padding, "sm");
     // One status mark per row: the pill. No status icon besides it.
     assert.equal(walk(row.node).filter((n) => n.type === "badge").length, 1);
     assert.ok(!find(row.node, (n) => n.type === "icon"));
     // Fixed-width columns on both sides, so titles never move when a status or a spinner changes.
     assert.equal(find(row.node, (n) => n.key.endsWith("-number")).text, row.node.key);
-    assert.deepEqual(find(row.node, (n) => n.key.endsWith("-lead")).style.width, { fixed: 36 });
+    assert.deepEqual(find(row.node, (n) => n.key.endsWith("-lead")).style.width, { fixed: ROW_LEAD_W });
     const status = row.node.children.at(-1);
     assert.equal(status.key, `${row.node.key}-status`);
-    assert.deepEqual(status.style.width, { fixed: 104 });
+    assert.deepEqual(status.style.width, { fixed: ROW_STATUS_W });
     assert.equal(status.justify, "end");
     assert.equal(find(row.node, (n) => n.key.endsWith("-title-2")).style.wrap, "no_wrap");
     assert.equal(find(row.node, (n) => n.key.endsWith("-text")).align, "start");
@@ -524,9 +532,47 @@ test("every row highlight spans the whole pane: every ancestor of the list and t
     for (const row of taskRows(state)) {
       assert.equal(row.node.type, "flex");
       assert.equal(row.node.direction, "row");
-      assert.equal(row.node.style.width, "fill", row.node.key);
-      assert.equal(row.node.justify, "between", row.node.key);
+      assert.deepEqual(row.node.style.width, { fixed: ROW_BODY_W }, row.node.key);
     }
   }
   assert.equal(noGroupView().align, "stretch");
+});
+
+test("every task row has the same fixed width, made of three fixed columns", () => {
+  // The numbers: pane 440, padding 12, app row padding 8 → row body 400; 400 - 2·8 padding - 2·8 gaps
+  // = 368 = id 36 + text 228 + status 104.
+  assert.equal(ROW_BODY_W, PANE_W - 2 * PANE_PAD - 2 * APP_ROW_PAD_X);
+  assert.equal(ROW_BODY_W, 400);
+  assert.equal(ROW_TEXT_W, 228);
+  const space = { xs: 4, sm: 8, md: 12, lg: 20, xl: 24 };
+  const page = { groups: [{ value: ROOT, label: "repo" }, { value: "/other", label: "other" }] };
+  const states = [
+    makeState(),
+    makeState({ filter: "todo" }),
+    makeState({ runs: [run("004", "working")] }),
+    makeState({ set: { ...makeState().set, tasks: [task("001", "TODO", { title: "x".repeat(120) }), task("002", "DONE", { title: "y" })] } }),
+  ];
+  for (const state of states) {
+    // The pane in both views (tab and page) has the width and padding the row width is derived from.
+    for (const view of [tasklistView(state), tasklistView(state, page)]) {
+      const pane = find(view, (n) => n.key === KEYS.tasksPane);
+      assert.deepEqual(pane.style.width, { fixed: PANE_W });
+      assert.equal(space[pane.style.padding], PANE_PAD);
+    }
+    const widths = new Set();
+    for (const row of taskRows(state)) {
+      const body = row.node;
+      assert.deepEqual(body.style.width, { fixed: ROW_BODY_W }, body.key);
+      assert.equal(space[body.style.padding], ROW_PAD);
+      assert.equal(space[body.style.gap], ROW_GAP);
+      const columns = body.children;
+      assert.deepEqual(columns.map((c) => c.key), [`${body.key}-lead`, `${body.key}-text`, `${body.key}-status`]);
+      for (const column of columns) assert.ok(typeof column.style.width?.fixed === "number", column.key);
+      const sum = columns.reduce((total, c) => total + c.style.width.fixed, 0);
+      assert.equal(sum + (columns.length - 1) * ROW_GAP + 2 * ROW_PAD, ROW_BODY_W, body.key);
+      assert.deepEqual(columns.map((c) => c.style.width.fixed), [ROW_LEAD_W, ROW_TEXT_W, ROW_STATUS_W]);
+      widths.add(JSON.stringify(body.style.width));
+    }
+    assert.equal(widths.size, 1);
+  }
 });

@@ -197,11 +197,32 @@ function metaLine(task: Task): string {
     .join(" · ");
 }
 
-/**
- * Characters of a list title line at text size sm (~6.8px each): the pane (440) minus its padding
- * (24), the app row padding (16), the row padding (16), the id column (36), two gaps (16) and the
- * status column (104) leave ~228px.
- */
+// Task list geometry. The app renders a list as a gpui uniform_list whose rows are
+// div.flex.flex_row with 8px horizontal padding and NO w_full (krad-ui extension_view/collections.rs):
+// each row is sized to its content, and width "fill" inside a row body resolves against that
+// content-sized row and does nothing. So every row body gets the same FIXED width, derived from the
+// fixed pane width, and so do its three columns: every row (and its hover and selection highlight)
+// is exactly as wide as the others. Widths include padding (gpui sizes boxes border-box).
+/** Width of the tasks pane. */
+export const PANE_W = 440;
+/** Padding of the tasks pane: the "md" space token. */
+export const PANE_PAD = 12;
+/** Horizontal padding the app puts on each side of a list row. */
+export const APP_ROW_PAD_X = 8;
+/** Width of a row body: the pane's inner width minus the app's row padding (the list has none). */
+export const ROW_BODY_W = PANE_W - 2 * PANE_PAD - 2 * APP_ROW_PAD_X; // 400
+/** Padding of a row body: the "sm" space token, on each side. */
+export const ROW_PAD = 8;
+/** Gap between the row's columns: the "sm" space token. */
+export const ROW_GAP = 8;
+/** The id column. */
+export const ROW_LEAD_W = 36;
+/** The status column: the widest pill ("in progress") with a spinner before it. */
+export const ROW_STATUS_W = 104;
+/** The text column: what the other columns, the gaps and the padding leave. */
+export const ROW_TEXT_W = ROW_BODY_W - 2 * ROW_PAD - ROW_LEAD_W - ROW_STATUS_W - 2 * ROW_GAP; // 228
+
+/** Characters of a list title line at text size sm (~6.8px each) in the 228px text column. */
 export const TITLE_LINE_CHARS = 32;
 
 /**
@@ -238,8 +259,9 @@ export function titleLines(title: string, max = TITLE_LINE_CHARS): [string, stri
 /**
  * One row of the task list: key = task id. A fixed-width leading column with the id, two title
  * lines and a meta line, then a fixed-width trailing column with the one status mark (a pill),
- * preceded by a spinner while an agent works on the task. The trailing column has a fixed width so
- * the titles never move when a status or the spinner changes.
+ * preceded by a spinner while an agent works on the task. The body and its three columns have fixed
+ * widths (ROW_BODY_W = ROW_LEAD_W + ROW_TEXT_W + ROW_STATUS_W + gaps + padding), so every row has
+ * the same width and the titles never move when a status or the spinner changes.
  */
 export function taskRow(state: TabState, task: Task): ListRow {
   const run = runOf(state, task.id);
@@ -250,29 +272,27 @@ export function taskRow(state: TabState, task: Task): ListRow {
   const node = ui.flex(
     id,
     [
-      hrow(
-        `${id}-left`,
+      ui.flex(
+        `${id}-lead`,
+        [ui.text(`${id}-number`, id, { size: "sm", font: "mono", color: "text_muted", wrap: "no_wrap" })],
+        { direction: "column", align: "center", style: { width: { fixed: ROW_LEAD_W } } },
+      ),
+      vstack(
+        `${id}-text`,
         [
-          ui.flex(
-            `${id}-lead`,
-            [ui.text(`${id}-number`, id, { size: "sm", font: "mono", color: "text_muted", wrap: "no_wrap" })],
-            { direction: "column", align: "center", style: { width: { fixed: 36 } } },
-          ),
-          vstack(`${id}-text`, [
-            ui.text(`${id}-title`, line1, titleStyle),
-            ui.text(`${id}-title-2`, line2 || "\u00a0", titleStyle),
-            ui.text(`${id}-meta`, metaLine(task) || "\u00a0", { size: "xs", color: "text_muted", wrap: "no_wrap" }),
-          ]),
+          ui.text(`${id}-title`, line1, titleStyle),
+          ui.text(`${id}-title-2`, line2 || " ", titleStyle),
+          ui.text(`${id}-meta`, metaLine(task) || " ", { size: "xs", color: "text_muted", wrap: "no_wrap" }),
         ],
-        { gap: "sm" },
+        { width: { fixed: ROW_TEXT_W } },
       ),
       ui.flex(
         `${id}-status`,
         [...(isLive(run) ? [ui.spinner(`${id}-spinner`)] : []), ui.badge(`${id}-badge`, badge.text, badge.tone)],
-        { direction: "row", align: "center", justify: "end", style: { gap: "xs", width: { fixed: 104 } } },
+        { direction: "row", align: "center", justify: "end", style: { gap: "xs", width: { fixed: ROW_STATUS_W } } },
       ),
     ],
-    { direction: "row", align: "center", justify: "between", style: { width: "fill", padding: "sm", gap: "sm" } },
+    { direction: "row", align: "center", style: { width: { fixed: ROW_BODY_W }, padding: "sm", gap: "sm" } },
   );
   return { node };
 }
@@ -430,8 +450,8 @@ export function tasksPane(state: TabState): Node {
   // list the full width, so every row highlight spans the pane.
   return stack(KEYS.tasksPane, [tasksPaneHeader(state), filter, list], {
     ...PANEL,
-    width: { fixed: 440 },
-    padding: "md",
+    width: { fixed: PANE_W },
+    padding: "md", // PANE_PAD
   });
 }
 
