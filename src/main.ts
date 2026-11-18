@@ -2,7 +2,7 @@ import { execFile } from "node:child_process";
 import { readFileSync, writeFileSync } from "node:fs";
 import { basename, dirname, relative, resolve, sep } from "node:path";
 import { promisify } from "node:util";
-import type { CallToolResult, CommandTarget, Context, SettingsValues, ViewEvent } from "@krad-ade/extension";
+import type { CallToolResult, CommandTarget, Context, Patch, RowsParams, RowsResult, SettingsValues, ViewEvent } from "@krad-ade/extension";
 import { createExtension, patch } from "@krad-ade/extension";
 import { createTask, findPlansDir, loadPlanSet, runnableTasks, writeStatus } from "./plans.js";
 import type { AgentInfo, ExecutionStyle, KradCli } from "./runner.js";
@@ -19,8 +19,18 @@ import {
 import { hasStopped, isLive, nextLaunches, sessionOver, verdictFor } from "./scheduler.js";
 import type { Harness, PlanSet, RunMode, RunRecord, Task, TaskStatus } from "./types.js";
 import { HARNESSES, TASK_STATUSES } from "./types.js";
-import type { SessionInfo, TabState } from "./view.js";
-import { ACTIONS, SIDEBAR_ACTIONS, sidebarView, tasklistView } from "./view.js";
+import type { Filter, SessionInfo, TabState } from "./view.js";
+import {
+  ACTIONS,
+  FILTERS,
+  filteredTasks,
+  KEYS,
+  sidebarRows,
+  sidebarView,
+  taskDetail,
+  taskRows,
+  tasklistView,
+} from "./view.js";
 
 const run = promisify(execFile);
 
@@ -73,6 +83,11 @@ function options(values: SettingsValues): Options {
 interface TabInfo {
   selected: string | null;
   editing: boolean;
+  filter: Filter;
+}
+
+function newTab(selected: string | null = null): TabInfo {
+  return { selected, editing: false, filter: "all" };
 }
 
 interface Session {
@@ -142,7 +157,7 @@ function sessionInfo(root: string): SessionInfo {
     done: session.done,
     total: session.total,
     running,
-    message: `${session.done} of ${session.total} done`,
+    message: null,
   };
 }
 
@@ -154,32 +169,49 @@ function readText(path: string): string | null {
   }
 }
 
-function tabState(root: string): TabState {
+/** The state a view of a root renders. `withPlan` = false skips reading the selected plan file (list rows). */
+function tabState(root: string, withPlan = true): TabState {
   const set = loadPlanSet(root);
-  const tab = tabs.get(tabKey(root) ?? root) ?? { selected: null, editing: false };
+  const tab = tabs.get(tabKey(root) ?? root) ?? newTab();
   const task = tab.selected === null ? undefined : set.tasks.find((t) => t.id === tab.selected);
   return {
     set,
     runs: runsOf(root),
     selected: tab.selected,
     editing: tab.editing,
-    planText: task ? readText(task.file) : null,
+    planText: withPlan && task ? readText(task.file) : null,
     session: sessionInfo(root),
+    filter: tab.filter,
   };
+}
+
+function patchTab(key: string, context: Context, patches: (state: TabState) => Patch[]): void {
+  try {
+    context.app.patchView({ view: "tasklist", instance: key }, patches(tabState(key)));
+  } catch (error) {
+    context.app.log("warn", `refresh of ${key} failed: ${failure(error)}`);
+  }
 }
 
 function refreshTab(root: string, context: Context): void {
   const key = tabKey(root);
-  if (key === undefined) {
-    if (sidebarRoot !== null && samePath(sidebarRoot, root)) refreshSidebar(context);
-    return;
-  }
-  try {
-    context.app.patchView({ view: "tasklist", instance: key }, [patch.replace(tasklistView(tabState(key)))]);
-  } catch (error) {
-    context.app.log("warn", `refresh of ${key} failed: ${failure(error)}`);
+  if (key !== undefined) {
+    patchTab(key, context, (state) => [patch.replace(tasklistView(state)), patch.invalidate(KEYS.tasks)]);
   }
   if (sidebarRoot !== null && samePath(sidebarRoot, root)) refreshSidebar(context);
+}
+
+/** Replaces only the detail pane and re-asks the list rows (selection highlight). */
+function refreshDetail(key: string, context: Context): void {
+  patchTab(key, context, (state) => [patch.replace(taskDetail(state)), patch.invalidate(KEYS.tasks)]);
+}
+
+/** Re-counts and re-asks the list rows after a filter change. */
+function refreshList(key: string, context: Context): void {
+  patchTab(key, context, (state) => [
+    patch.setCount(KEYS.tasks, filteredTasks(state).length),
+    patch.invalidate(KEYS.tasks),
+  ]);
 }
 
 function refreshAll(context: Context): void {
@@ -212,7 +244,9 @@ async function renderSidebar(context: Context): Promise<ReturnType<typeof sideba
 function refreshSidebar(context: Context): void {
   if (!sidebarOpen) return;
   void renderSidebar(context)
-    .then((node) => context.app.patchView({ view: "tasks" }, [patch.replace(node)]))
+    .then((node) =>
+      context.app.patchView({ view: "tasks" }, [patch.replace(node), patch.invalidate(KEYS.sidebarTasks)]),
+    )
     .catch((error) => context.app.log("warn", `refresh of the Tasks view failed: ${failure(error)}`));
 }
 
@@ -220,7 +254,13 @@ function refreshSidebar(context: Context): void {
 async function openTab(root: string, context: Context, selected: string | null = null): Promise<void> {
   if (selected !== null) {
     const key = tabKey(root) ?? root;
-    tabs.set(key, { selected, editing: false });
+    const tab = tabs.get(key);
+    if (tab) {
+      tab.selected = selected;
+      tab.editing = false;
+    } else {
+      tabs.set(key, newTab(selected));
+    }
   }
   await context.app.openView({ view: "tasklist", instance: tabKey(root) ?? root, title: `Tasklist · ${basename(root)}` });
   if (selected !== null) refreshTab(root, context);
@@ -229,12 +269,25 @@ async function openTab(root: string, context: Context, selected: string | null =
 async function onSidebarEvent(event: ViewEvent, context: Context): Promise<void> {
   try {
     const root = sidebarRoot ?? (await sidebarGroup(context));
-    if (event.kind === "click" && event.action === SIDEBAR_ACTIONS.openTab) {
-      if (root === null) return await withRoot(null, context, (r) => openTab(r, context));
-      return await openTab(root, context);
+    if (event.kind === "click") {
+      switch (event.action) {
+        case ACTIONS.openTab:
+          if (root === null) return await withRoot(null, context, (r) => openTab(r, context));
+          return await openTab(root, context);
+        case ACTIONS.refresh:
+          return refreshSidebar(context);
+        case ACTIONS.runNext:
+          if (root !== null) await runNext(root, context);
+          return;
+        case ACTIONS.generate:
+          if (root !== null) await generate(root, context);
+          return;
+      }
+      return;
     }
-    if (event.kind === "item_action" && event.action === SIDEBAR_ACTIONS.select && root !== null) {
-      return await openTab(root, context, event.item);
+    if (event.kind === "choose" && event.node === KEYS.sidebarTasks && root !== null) {
+      const id = event.items[0];
+      if (id !== undefined) await openTab(root, context, id);
     }
   } catch (error) {
     context.app.toast(failure(error), "error");
@@ -676,7 +729,7 @@ async function taskAction(root: string, action: string, id: string, context: Con
         tab.selected = id;
         tab.editing = true;
       }
-      refreshTab(root, context);
+      refreshDetail(tabKey(root) ?? root, context);
       return;
   }
 }
@@ -685,18 +738,18 @@ async function onTabEvent(event: ViewEvent, root: string, context: Context): Pro
   const key = tabKey(root) ?? root;
   let tab = tabs.get(key);
   if (!tab) {
-    tab = { selected: null, editing: false };
+    tab = newTab();
     tabs.set(key, tab);
   }
   const { app } = context;
   try {
+    if (event.kind === "choose" && event.node === KEYS.tasks) {
+      tab.selected = event.items[0] ?? null;
+      tab.editing = false;
+      refreshDetail(key, context);
+      return;
+    }
     if (event.kind === "item_action") {
-      if (event.action === ACTIONS.select) {
-        tab.selected = event.item;
-        tab.editing = false;
-        refreshTab(key, context);
-        return;
-      }
       await taskAction(key, event.action, event.item, context);
       return;
     }
@@ -718,7 +771,7 @@ async function onTabEvent(event: ViewEvent, root: string, context: Context): Pro
           return await stopAutoRun(key, context);
         case ACTIONS.cancelEdit:
           tab.editing = false;
-          return refreshTab(key, context);
+          return refreshDetail(key, context);
         case ACTIONS.run:
         case ACTIONS.runWorktree:
         case ACTIONS.variants:
@@ -728,6 +781,10 @@ async function onTabEvent(event: ViewEvent, root: string, context: Context): Pro
           return;
       }
       return;
+    }
+    if (event.kind === "select" && event.action === ACTIONS.filter) {
+      if (FILTERS.includes(event.value as Filter)) tab.filter = event.value as Filter;
+      return refreshList(key, context);
     }
     if (event.kind === "select" && event.action === ACTIONS.setStatus) {
       if (tab.selected === null) return;
@@ -834,6 +891,24 @@ async function setStatusTool(args: unknown, root: string | null, context: Contex
 }
 
 // ---------------------------------------------------------------------------
+// List rows
+// ---------------------------------------------------------------------------
+
+const NO_ROWS: RowsResult = { kind: "list", rows: [] };
+
+function tabListRows(params: RowsParams): RowsResult {
+  if (params.node !== KEYS.tasks || !params.instance) return NO_ROWS;
+  return { kind: "list", rows: taskRows(tabState(params.instance, false), params.start, params.end) };
+}
+
+async function sidebarListRows(params: RowsParams, context: Context): Promise<RowsResult> {
+  if (params.node !== KEYS.sidebarTasks) return NO_ROWS;
+  const root = sidebarRoot ?? (await sidebarGroup(context));
+  if (root === null) return NO_ROWS;
+  return { kind: "list", rows: sidebarRows(tabState(root, false), params.start, params.end) };
+}
+
+// ---------------------------------------------------------------------------
 // Extension
 // ---------------------------------------------------------------------------
 
@@ -897,6 +972,9 @@ createExtension({
       render(_view, context) {
         return renderSidebar(context);
       },
+      rows(params, context) {
+        return sidebarListRows(params, context);
+      },
       onEvent(event, _view, context) {
         return onSidebarEvent(event, context);
       },
@@ -907,8 +985,11 @@ createExtension({
     tasklist: {
       render(view) {
         const root = view.instance ?? "";
-        if (tabKey(root) === undefined) tabs.set(root, { selected: null, editing: false });
+        if (tabKey(root) === undefined) tabs.set(root, newTab());
         return tasklistView(tabState(root));
+      },
+      rows(params) {
+        return tabListRows(params);
       },
       onEvent(event, view, context) {
         if (!view.instance) return;
