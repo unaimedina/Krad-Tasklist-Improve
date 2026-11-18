@@ -1138,7 +1138,7 @@ function metaLine(task) {
 function statusIcon(key, task, badge) {
   return ui.icon(key, STATUS_ICONS[task.status], TONE_COLORS[badge.tone ?? "neutral"]);
 }
-var TITLE_LINE_CHARS = 42;
+var TITLE_LINE_CHARS = 34;
 function titleLines(title, max = TITLE_LINE_CHARS) {
   const words = title.replace(/`/g, "").replace(/\s+/g, " ").trim().split(" ");
   const take = (limit) => {
@@ -1171,24 +1171,28 @@ function taskRow(state, task) {
   const node2 = ui.flex(
     id,
     [
-      ui.flex(
-        `${id}-gutter`,
+      hrow(
+        `${id}-left`,
         [
-          ui.text(`${id}-number`, id, { size: "sm", weight: "medium", font: "mono", color: "text_subtle", wrap: "no_wrap" }),
-          statusIcon(`${id}-icon`, task, badge)
+          ui.flex(
+            `${id}-lead`,
+            [
+              ui.text(`${id}-number`, id, { size: "sm", weight: "medium", font: "mono", color: "text_subtle", wrap: "no_wrap" }),
+              statusIcon(`${id}-icon`, task, badge)
+            ],
+            { direction: "column", align: "center", style: { gap: "xs", width: { fixed: 36 } } }
+          ),
+          vstack(`${id}-text`, [
+            ui.text(`${id}-title`, line1, titleStyle),
+            ui.text(`${id}-title-2`, line2 || "\xA0", titleStyle),
+            ui.text(`${id}-meta`, metaLine(task) || "\xA0", { size: "xs", color: "text_muted", wrap: "no_wrap" })
+          ])
         ],
-        { direction: "column", align: "center", style: { gap: "xs", width: { fixed: 32 } } }
+        { gap: "md" }
       ),
-      vstack(`${id}-text`, [
-        ui.text(`${id}-title`, line1, titleStyle),
-        ui.text(`${id}-title-2`, line2 || "\xA0", titleStyle),
-        hrow(`${id}-meta-row`, [
-          ui.badge(`${id}-badge`, badge.text, badge.tone),
-          ui.text(`${id}-meta`, metaLine(task), { size: "xs", color: "text_muted", wrap: "no_wrap" })
-        ])
-      ])
+      ui.badge(`${id}-badge`, badge.text, badge.tone)
     ],
-    { direction: "row", align: "start", style: { width: "fill", padding: "sm", gap: "md" } }
+    { direction: "row", align: "center", justify: "between", style: { width: "fill", padding: "sm", gap: "md" } }
   );
   return { node: node2 };
 }
@@ -1301,7 +1305,6 @@ function tasksPane(state) {
     ],
     {
       direction: "column",
-      align: "stretch",
       style: { ...PANEL, width: { fixed: 420 }, padding: "md", gap: "md" }
     }
   );
@@ -1455,7 +1458,6 @@ function taskDetail(state) {
   }
   return ui.flex(KEYS.detail, children, {
     direction: "column",
-    align: "stretch",
     style: { ...PANEL, height: "fill", padding: "lg", gap: "md" }
   });
 }
@@ -1483,14 +1485,12 @@ function tasklistView(state, page = null) {
     children.push(
       ui.flex(KEYS.body, [tasksPane(state), taskDetail(state)], {
         direction: "row",
-        align: "stretch",
         style: { width: "fill", height: "fill", gap: "lg" }
       })
     );
   }
   return ui.flex(KEYS.root, children, {
     direction: "column",
-    align: "stretch",
     style: { width: "fill", height: "fill", padding: "lg", gap: "lg" }
   });
 }
@@ -1498,7 +1498,7 @@ function noGroupView() {
   return ui.flex(
     KEYS.root,
     [emptyState(KEYS.empty, "Open a group to see its tasks.", [], { width: "fill", height: "fill" })],
-    { direction: "column", align: "stretch", style: { width: "fill", height: "fill", padding: "lg", gap: "lg" } }
+    { direction: "column", style: { width: "fill", height: "fill", padding: "lg", gap: "lg" } }
   );
 }
 

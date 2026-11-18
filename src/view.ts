@@ -186,8 +186,11 @@ function statusIcon(key: string, task: Task, badge: Badge): Node {
   return ui.icon(key, STATUS_ICONS[task.status], TONE_COLORS[badge.tone ?? "neutral"]);
 }
 
-/** Characters of a list title line that fit the tasks pane at text size sm (measured for ~320px). */
-export const TITLE_LINE_CHARS = 42;
+/**
+ * Characters of a list title line at text size sm: the pane (420) minus paddings, the leading
+ * column (36), the gaps and the badge leave ~240px.
+ */
+export const TITLE_LINE_CHARS = 34;
 
 /**
  * A task title for the list: Markdown code ticks dropped, split at word boundaries into exactly
@@ -221,8 +224,10 @@ export function titleLines(title: string, max = TITLE_LINE_CHARS): [string, stri
 }
 
 /**
- * One row of the task list: key = task id. A numbered gutter (id over the status icon), then two
- * title lines and a meta line with the status badge, so every row is complete and the same height.
+ * One row of the task list: key = task id. A fixed-width leading column (id over the status icon),
+ * two title lines and a meta line, then the status badge at the far right. The body is the only
+ * child of the app's flex_1 row wrapper, so width "fill" there is safe and makes every row (and
+ * its hover/selected highlight) span the whole pane.
  */
 export function taskRow(state: TabState, task: Task): ListRow {
   const badge = statusBadge(task, runOf(state, task.id));
@@ -232,24 +237,28 @@ export function taskRow(state: TabState, task: Task): ListRow {
   const node = ui.flex(
     id,
     [
-      ui.flex(
-        `${id}-gutter`,
+      hrow(
+        `${id}-left`,
         [
-          ui.text(`${id}-number`, id, { size: "sm", weight: "medium", font: "mono", color: "text_subtle", wrap: "no_wrap" }),
-          statusIcon(`${id}-icon`, task, badge),
+          ui.flex(
+            `${id}-lead`,
+            [
+              ui.text(`${id}-number`, id, { size: "sm", weight: "medium", font: "mono", color: "text_subtle", wrap: "no_wrap" }),
+              statusIcon(`${id}-icon`, task, badge),
+            ],
+            { direction: "column", align: "center", style: { gap: "xs", width: { fixed: 36 } } },
+          ),
+          vstack(`${id}-text`, [
+            ui.text(`${id}-title`, line1, titleStyle),
+            ui.text(`${id}-title-2`, line2 || " ", titleStyle),
+            ui.text(`${id}-meta`, metaLine(task) || " ", { size: "xs", color: "text_muted", wrap: "no_wrap" }),
+          ]),
         ],
-        { direction: "column", align: "center", style: { gap: "xs", width: { fixed: 32 } } },
+        { gap: "md" },
       ),
-      vstack(`${id}-text`, [
-        ui.text(`${id}-title`, line1, titleStyle),
-        ui.text(`${id}-title-2`, line2 || " ", titleStyle),
-        hrow(`${id}-meta-row`, [
-          ui.badge(`${id}-badge`, badge.text, badge.tone),
-          ui.text(`${id}-meta`, metaLine(task), { size: "xs", color: "text_muted", wrap: "no_wrap" }),
-        ]),
-      ]),
+      ui.badge(`${id}-badge`, badge.text, badge.tone),
     ],
-    { direction: "row", align: "start", style: { width: "fill", padding: "sm", gap: "md" } },
+    { direction: "row", align: "center", justify: "between", style: { width: "fill", padding: "sm", gap: "md" } },
   );
   return { node };
 }
@@ -389,7 +398,6 @@ export function tasksPane(state: TabState): Node {
     ],
     {
       direction: "column",
-      align: "stretch",
       style: { ...PANEL, width: { fixed: 420 }, padding: "md", gap: "md" },
     },
   );
@@ -561,7 +569,6 @@ export function taskDetail(state: TabState): Node {
   }
   return ui.flex(KEYS.detail, children, {
     direction: "column",
-    align: "stretch",
     style: { ...PANEL, height: "fill", padding: "lg", gap: "md" },
   });
 }
@@ -591,14 +598,12 @@ export function tasklistView(state: TabState, page: PageChrome | null = null): N
     children.push(
       ui.flex(KEYS.body, [tasksPane(state), taskDetail(state)], {
         direction: "row",
-        align: "stretch",
         style: { width: "fill", height: "fill", gap: "lg" },
       }),
     );
   }
   return ui.flex(KEYS.root, children, {
     direction: "column",
-    align: "stretch",
     style: { width: "fill", height: "fill", padding: "lg", gap: "lg" },
   });
 }
@@ -608,6 +613,6 @@ export function noGroupView(): Node {
   return ui.flex(
     KEYS.root,
     [emptyState(KEYS.empty, "Open a group to see its tasks.", [], { width: "fill", height: "fill" })],
-    { direction: "column", align: "stretch", style: { width: "fill", height: "fill", padding: "lg", gap: "lg" } },
+    { direction: "column", style: { width: "fill", height: "fill", padding: "lg", gap: "lg" } },
   );
 }

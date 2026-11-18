@@ -127,12 +127,15 @@ test("taskRows returns one uniform row per task without menus", () => {
   assert.equal(new Set(rows.map(shape)).size, 1);
   for (const row of rows) {
     assert.equal(row.menu, undefined);
-    // Row body: justify between with the badge last, padding sm; the text column starts at the left.
-    assert.equal(row.node.align, "start");
+    // Row body: full width (one highlight width for all rows), centred, badge at the far right.
+    assert.equal(row.node.align, "center");
+    assert.equal(row.node.justify, "between");
+    assert.equal(row.node.style.width, "fill");
     assert.equal(row.node.style.padding, "sm");
-    // Numbered gutter first; the badge sits on the meta line, always visible.
-    assert.equal(row.node.children[0].children[0].text, row.node.key);
-    assert.equal(find(row.node, (n) => n.key.endsWith("-meta-row")).children[0].type, "badge");
+    // Fixed-width leading column with the id over the status icon.
+    assert.equal(find(row.node, (n) => n.key.endsWith("-number")).text, row.node.key);
+    assert.deepEqual(find(row.node, (n) => n.key.endsWith("-lead")).style.width, { fixed: 36 });
+    assert.equal(row.node.children.at(-1).type, "badge");
     assert.equal(find(row.node, (n) => n.key.endsWith("-title-2")).style.wrap, "no_wrap");
     assert.equal(find(row.node, (n) => n.key.endsWith("-text")).align, "start");
     const keys = walk(row.node).map((n) => n.key);
@@ -416,13 +419,14 @@ test("all keys in the views are unique", () => {
 });
 
 test("titleLines fits any title in two equal-height lines", () => {
-  assert.deepEqual(titleLines("Draw the Tasklist tab (`src/view.ts`)"), ["Draw the Tasklist tab (src/view.ts)", ""]);
+  assert.deepEqual(titleLines("Draw the Tasklist tab"), ["Draw the Tasklist tab", ""]);
+  assert.deepEqual(titleLines("Draw the Tasklist tab (`src/view.ts`)"), ["Draw the Tasklist tab", "(src/view.ts)"]);
   assert.deepEqual(titleLines("Scaffold the \"Tasklist\" Krad ADE extension from the krad-docker skeleton"), [
-    "Scaffold the \"Tasklist\" Krad ADE extension",
-    "from the krad-docker skeleton",
+    "Scaffold the \"Tasklist\" Krad ADE",
+    "extension from the krad-docker…",
   ]);
   const long = titleLines("Wire the tab, agent runs, the auto-run session and agent tools (`src/main.ts`, `src/scheduler.ts`)");
-  assert.equal(long[0], "Wire the tab, agent runs, the auto-run");
+  assert.equal(long[0], "Wire the tab, agent runs, the");
   assert.ok(long[1].endsWith("…"));
   const words = titleLines("x".repeat(100));
   assert.equal(words[0].length, TITLE_LINE_CHARS);
@@ -432,4 +436,34 @@ test("titleLines fits any title in two equal-height lines", () => {
   // A short title still gives a second (blank) line so every row has the same height.
   const row = taskRows(makeState())[0].node;
   assert.equal(find(row, (n) => n.key === "001-title-2").text, " ");
+});
+
+/** The nodes from `root` down to the node with `key` (excluded), or null. */
+function ancestors(root, key, path = []) {
+  if (root.key === key) return path;
+  for (const child of root.children ?? []) {
+    const found = ancestors(child, key, [...path, root]);
+    if (found) return found;
+  }
+  return null;
+}
+
+test("every row highlight spans the whole pane: no ancestor of the list shrinks its rows", () => {
+  const states = [makeState(), makeState({ selected: "002", planText: "# x" }), makeState({ filter: "todo" })];
+  const page = { groups: [{ value: ROOT, label: "repo" }, { value: "/other", label: "other" }] };
+  for (const state of states) {
+    for (const view of [tasklistView(state), tasklistView(state, page)]) {
+      const path = ancestors(view, KEYS.tasks);
+      assert.deepEqual(path.map((n) => n.key), [KEYS.root, KEYS.body, KEYS.tasksPane]);
+      for (const node of path) {
+        assert.ok(node.align !== "start" && node.align !== "center", `${node.key} align ${node.align}`);
+      }
+    }
+    for (const row of taskRows(state)) {
+      assert.equal(row.node.type, "flex");
+      assert.equal(row.node.direction, "row");
+      assert.equal(row.node.style.width, "fill", row.node.key);
+      assert.equal(row.node.justify, "between", row.node.key);
+    }
+  }
 });
