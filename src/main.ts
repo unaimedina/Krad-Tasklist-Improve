@@ -749,10 +749,6 @@ async function onTabEvent(event: ViewEvent, root: string, context: Context): Pro
       refreshDetail(key, context);
       return;
     }
-    if (event.kind === "item_action") {
-      await taskAction(key, event.action, event.item, context);
-      return;
-    }
     if (event.kind === "click") {
       switch (event.action) {
         case ACTIONS.newTask:

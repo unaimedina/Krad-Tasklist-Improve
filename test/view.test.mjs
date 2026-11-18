@@ -87,10 +87,22 @@ test("the tab root fills its tab and the tasks pane holds a single-selection lis
   assert.equal(view.key, KEYS.root);
   assert.equal(view.style.height, "fill");
   assert.equal(view.style.width, "fill");
+  assert.equal(view.style.padding, "lg");
+  assert.equal(view.style.gap, "lg");
   const body = find(view, (n) => n.key === KEYS.body);
   assert.equal(body.style.height, "fill");
+  assert.equal(body.style.gap, "lg");
+  // Left pane: fixed width, stretched by the body row; right pane grows sideways with height fill.
   const pane = find(view, (n) => n.key === KEYS.tasksPane);
-  assert.equal(pane.style.height, "fill");
+  assert.deepEqual(pane.style.width, { fixed: 380 });
+  assert.notEqual(pane.style.height, "fill");
+  assert.equal(pane.style.padding, "md");
+  const detail = find(view, (n) => n.key === KEYS.detail);
+  assert.equal(detail.style.height, "fill");
+  assert.equal(detail.style.width, undefined);
+  // Pane header on its own line, the filter chips on the next one.
+  assert.deepEqual(pane.children.map((n) => n.key), ["tasks-pane-header", "tasks-filter", KEYS.tasks]);
+  assert.equal(find(pane, (n) => n.key === "tasks-count").text, "4");
   const list = find(pane, (n) => n.key === KEYS.tasks);
   assert.equal(list.type, "list");
   assert.equal(list.selection, "single");
@@ -98,7 +110,7 @@ test("the tab root fills its tab and the tasks pane holds a single-selection lis
   assert.ok(!find(view, (n) => n.type === "tree"));
 });
 
-test("taskRows returns one uniform row per task with menus", () => {
+test("taskRows returns one uniform row per task without menus", () => {
   const rows = taskRows(makeState());
   assert.deepEqual(rows.map((r) => r.node.key), ["001", "002", "003", "004"]);
   const byKey = Object.fromEntries(rows.map((r) => [r.node.key, r]));
@@ -113,10 +125,12 @@ test("taskRows returns one uniform row per task with menus", () => {
   const shape = (row) => walk(row.node).map((n) => n.type).join(",");
   assert.equal(new Set(rows.map(shape)).size, 1);
   for (const row of rows) {
-    assert.deepEqual(
-      row.menu.map((m) => m.action),
-      [ACTIONS.run, ACTIONS.runWorktree, ACTIONS.variants, ACTIONS.edit, ACTIONS.quickEdit],
-    );
+    assert.equal(row.menu, undefined);
+    // Row body: justify between with the badge last, padding sm; the text column starts at the left.
+    assert.equal(row.node.justify, "between");
+    assert.equal(row.node.style.padding, "sm");
+    assert.equal(row.node.children.at(-1).type, "badge");
+    assert.equal(find(row.node, (n) => n.key.endsWith("-text")).align, "start");
     const keys = walk(row.node).map((n) => n.key);
     assert.equal(new Set(keys).size, keys.length);
   }
@@ -161,7 +175,18 @@ test("statusBadge maps every status and live states", () => {
 test("header: chips, ghost icon buttons, one primary, stop during a session", () => {
   const idle = header(makeState());
   assert.equal(idle.key, KEYS.header);
-  assert.deepEqual(idle.style.height, { fixed: 38 });
+  assert.equal(idle.justify, "between");
+  assert.equal(idle.align, "center");
+  assert.equal(find(idle, (n) => n.key === "header-title").style.size, "lg");
+  // The four ghost icon buttons sit in a bordered pill.
+  const pill = find(idle, (n) => n.key === "header-tools");
+  assert.equal(pill.style.radius, "full");
+  assert.equal(pill.style.border, "border");
+  assert.deepEqual(
+    pill.children.map((n) => n.action),
+    [ACTIONS.newTask, ACTIONS.generate, ACTIONS.reconcile, ACTIONS.refresh],
+  );
+  assert.equal(find(idle, (n) => n.key === "header-right").style.gap, "md");
   const nodes = walk(idle);
   assert.equal(nodes.filter((n) => n.variant === "primary").length, 1);
   assert.equal(find(idle, (n) => n.variant === "primary").action, ACTIONS.autoRun);
@@ -192,10 +217,17 @@ test("header: chips, ghost icon buttons, one primary, stop during a session", ()
   assert.ok(!find(none, (n) => n.key === "header-running"));
 });
 
-test("planBody drops only the leading Plan heading", () => {
-  assert.equal(planBody("# Plan 003: Do it\n\n## Status\n\nx"), "## Status\n\nx");
+test("planBody drops the leading Plan heading and the Status section", () => {
+  assert.equal(
+    planBody("# Plan 003: Do it\n\n## Status\n\n- **Priority**: P1\n\n## Steps\n\n1. x\n\n## Done\n"),
+    "## Steps\n\n1. x\n\n## Done\n",
+  );
+  assert.equal(planBody("# Plan 003: Do it\n\n## Status\n\nonly status"), "");
+  assert.equal(planBody("\n# Plan 12: x\r\n## Status\r\n- a\r\n## Why\r\nbody"), "## Why\r\nbody");
   assert.equal(planBody("\n# Plan 12: x\r\nbody"), "body");
   assert.equal(planBody("Intro\n# Plan 003: later"), "Intro\n# Plan 003: later");
+  // "### Status" or "## Statuses" are kept.
+  assert.equal(planBody("### Status\nx\n## Statuses\ny"), "### Status\nx\n## Statuses\ny");
 });
 
 test("taskDetail shows the plan, the note, and the quick editor", () => {
@@ -203,22 +235,44 @@ test("taskDetail shows the plan, the note, and the quick editor", () => {
   assert.equal(empty.key, KEYS.detail);
   assert.ok(find(empty, (n) => n.type === "text" && n.text === "Select a task to read its plan"));
   assert.ok(find(empty, (n) => n.type === "icon" && n.icon === "tasks"));
+  assert.equal(empty.style.padding, "xl");
+  assert.equal(empty.style.height, "fill");
 
-  const plan = "# Plan 003: Task 003\n\nDo things.";
+  const plan = "# Plan 003: Task 003\n\n## Status\n\n- **Priority**: P1\n\n## Steps\n\nDo things.";
   const detail = taskDetail(makeState({ selected: "003", planText: plan }));
   assert.equal(detail.style.height, "fill");
-  assert.equal(find(detail, (n) => n.key === "detail-plan-id").text, "Plan 003");
+  assert.equal(detail.style.padding, "lg");
+  assert.equal(detail.style.gap, "md");
+  assert.equal(find(detail, (n) => n.key === "detail-plan-id").text, "PLAN 003");
+  assert.equal(find(detail, (n) => n.key === "detail-chips").style.gap, "sm");
+  // Actions: run group on the left, icon-only editors on the right.
+  const actionsRow = find(detail, (n) => n.key === "detail-actions");
+  assert.equal(actionsRow.justify, "between");
+  const editors = find(actionsRow, (n) => n.key === "detail-editors");
+  for (const button of editors.children) {
+    assert.equal(button.variant, "ghost");
+    assert.ok(button.tooltip && !button.label);
+  }
+  assert.deepEqual(editors.children.map((n) => n.icon), ["pencil", "note"]);
+  // The status select has a line of its own, next to its label only.
+  const statusRow = find(detail, (n) => n.key === "detail-status-row");
+  assert.deepEqual(statusRow.children.map((n) => n.type), ["flex", "select"]);
+  assert.ok(detail.children.includes(statusRow));
+  assert.ok(!find(actionsRow, (n) => n.type === "select"));
+  // File: one small mono line, no details table without a run.
+  assert.equal(find(detail, (n) => n.key === "detail-file-path").text, "plans/003-task-003.md");
+  assert.equal(find(detail, (n) => n.key === "detail-file-path").style.font, "mono");
+  assert.ok(!find(detail, (n) => n.type === "details"));
   assert.equal(find(detail, (n) => n.key === "detail-title").text, "Task 003");
   const scroll = find(detail, (n) => n.type === "scroll");
   assert.equal(scroll.style.height, "fill");
   const md = find(scroll, (n) => n.type === "markdown");
-  assert.equal(md.text, "Do things.");
+  assert.equal(md.text, "## Steps\n\nDo things.");
   const note = find(detail, (n) => n.type === "text" && n.text === "needs an API key");
   assert.equal(note.style.color, "warning");
   assert.equal(find(detail, (n) => n.type === "select").value, "BLOCKED");
   assert.equal(find(detail, (n) => n.key === "detail-run").variant, "primary");
   assert.equal(walk(detail).filter((n) => n.variant === "primary").length, 1);
-  assert.equal(find(detail, (n) => n.key === "detail-info").entries[0].value, "plans/003-task-003.md");
   assert.ok(find(detail, (n) => n.type === "badge" && n.text === "Priority P1"));
   assert.ok(!find(detail, (n) => n.type === "form"));
 
@@ -275,7 +329,7 @@ test("the sidebar is compact: ghost buttons, a list, one-line rows", () => {
     assert.equal(button.variant, "ghost", action);
     assert.ok(button.tooltip, action);
   }
-  assert.equal(find(view, (n) => n.key === "sidebar-done").text, "1/4 done");
+  assert.equal(find(view, (n) => n.key === "sidebar-done").text, "1/4");
   const list = find(view, (n) => n.key === KEYS.sidebarTasks);
   assert.equal(list.type, "list");
   assert.equal(list.selection, "single");
@@ -283,6 +337,16 @@ test("the sidebar is compact: ghost buttons, a list, one-line rows", () => {
   const rows = sidebarRows(makeState());
   assert.deepEqual(rows.map((r) => r.node.key), ["001", "002", "003", "004"]);
   assert.ok(!walk(rows[0].node).some((n) => n.type === "flex" && n.direction === "column"));
+  for (const row of rows) {
+    assert.equal(row.menu, undefined);
+    assert.equal(row.node.justify, "between");
+    assert.equal(row.node.style.padding, "xs");
+    assert.equal(row.node.children.at(-1).type, "badge");
+  }
+  assert.equal(find(rows[2].node, (n) => n.key === "003-id").style.font, "mono");
+  assert.equal(view.style.padding, "md");
+  assert.equal(view.style.gap, "md");
+  assert.equal(view.style.height, "fill");
 
   const noPlans = makeState();
   noPlans.set = { ...noPlans.set, dir: null, tasks: [] };
@@ -291,6 +355,38 @@ test("the sidebar is compact: ghost buttons, a list, one-line rows", () => {
   assert.equal(find(empty, (n) => n.action === ACTIONS.generate).variant, "ghost");
   assert.ok(!find(empty, (n) => n.key === KEYS.sidebarTasks));
   assert.ok(find(sidebarView(null), (n) => n.text === "Open a group to see its tasks."));
+});
+
+/** Rows (flex row) with siblings whose child has width fill: that child would overflow the row. */
+function widthFillInRows(node) {
+  return walk(node)
+    .filter((n) => n.type === "flex" && n.direction === "row" && (n.children ?? []).length > 1)
+    .flatMap((n) => n.children.filter((c) => c.style?.width === "fill").map((c) => `${n.key} > ${c.key}`));
+}
+
+test("no row gives width fill to a child that has siblings", () => {
+  const variants = [
+    {},
+    { selected: "002", planText: "# Plan 002: x\n\nbody" },
+    { selected: "003", planText: "# x", editing: true },
+    { session: { active: true, done: 0, total: 2, running: 1, message: "m" } },
+  ];
+  for (const overrides of variants) {
+    const state = makeState(overrides);
+    state.set.problems = ["one"];
+    const nodes = [
+      tasklistView(state),
+      sidebarView(state),
+      ...taskRows(state).map((r) => r.node),
+      ...sidebarRows(state).map((r) => r.node),
+    ];
+    for (const node of nodes) assert.deepEqual(widthFillInRows(node), [], node.key);
+  }
+  const noPlans = makeState();
+  noPlans.set = { ...noPlans.set, dir: null, tasks: [] };
+  assert.deepEqual(widthFillInRows(tasklistView(noPlans)), []);
+  const empty = find(tasklistView(noPlans), (n) => n.key === KEYS.empty);
+  assert.equal(empty.style.padding, "xl");
 });
 
 test("all keys in the views are unique", () => {

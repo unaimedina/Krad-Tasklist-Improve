@@ -128,7 +128,7 @@ test("the tasklist view serves the fixture tasks as list rows", async (t) => {
   const rows = await request("view/rows", { view: "tasklist", instance: dir, node: "tasks", start: 0, end: list.count });
   assert.equal(rows.result?.kind, "list", JSON.stringify(rows));
   assert.deepEqual(rows.result.rows.map((r) => r.node.key), FIXTURE_IDS);
-  assert.ok(rows.result.rows.every((r) => r.menu.some((m) => m.action === "run")));
+  assert.ok(rows.result.rows.every((r) => r.menu === undefined), "no row menus");
 });
 
 test("choosing a task patches the detail pane with its plan Markdown", async (t) => {
@@ -151,8 +151,9 @@ test("choosing a task patches the detail pane with its plan Markdown", async (t)
   assert.equal(md?.type, "markdown");
   const plan = readFileSync(join(dir, "plans", "002-b.md"), "utf8");
   assert.ok(!md.text.includes("# Plan 002"), md.text.slice(0, 80));
-  assert.ok(md.text.startsWith("## Status"), md.text.slice(0, 80));
-  assert.ok(plan.endsWith(md.text), "the Markdown is the plan text minus its H1");
+  assert.ok(!/^## Status/m.test(md.text), md.text.slice(0, 80));
+  assert.ok(md.text.startsWith("## Steps"), md.text.slice(0, 80));
+  assert.ok(plan.endsWith(md.text), "the Markdown is the plan text minus its H1 and Status section");
   assert.equal(findNode(patches[0].node, "detail-title")?.text, "Plan B from file");
 
   // A later full render keeps the selection.

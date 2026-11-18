@@ -1,5 +1,5 @@
 import { basename, relative } from "node:path";
-import type { Badge, ColorToken, Icon, ItemAction, ListRow, Node, Style, Tone } from "@krad-ade/extension";
+import type { Badge, ColorToken, Icon, ListRow, Node, Style, Tone } from "@krad-ade/extension";
 import { ui } from "@krad-ade/extension";
 import type { Harness, PlanSet, RunRecord, Task, TaskStatus } from "./types.js";
 import { TASK_STATUSES } from "./types.js";
@@ -124,17 +124,24 @@ export function statusBadge(task: Task, run: RunRecord | null): Badge {
   return STATUS_BADGES[task.status];
 }
 
-/** Small muted section label, e.g. TASKS. */
-function label(key: string, text: string): Node {
-  return ui.text(key, text, { size: "xs", weight: "medium", color: "text_muted", wrap: "no_wrap" });
-}
+// Layout rules of the app's renderer (krad-ui extension_view/style.rs):
+// - width "fill" is 100% of the parent, not a flex grow: never put it on a child of a row that has siblings.
+// - height "fill" is 100% height plus flex-grow along the PARENT's main axis: in a row it takes the remaining width.
+// - a select renders as a wrapping row of chips: give it its own line.
 
 function iconButton(key: string, action: string, icon: Icon, tooltip: string, enabled: "yes" | "no" = "yes"): Node {
   return ui.button(key, action, { icon, variant: "ghost", tooltip, enabled });
 }
 
-function hrow(key: string, children: Node[], style: Style = {}, justify: "start" | "between" | "center" = "start"): Node {
+type Justify = "start" | "between" | "center";
+
+function hrow(key: string, children: Node[], style: Style = {}, justify: Justify = "start"): Node {
   return ui.flex(key, children, { direction: "row", align: "center", justify, style: { gap: "sm", ...style } });
+}
+
+/** A column whose items start at the left (the renderer's default centres them). */
+function vstack(key: string, children: Node[], style: Style = {}): Node {
+  return ui.flex(key, children, { direction: "column", align: "start", style: { gap: "xs", ...style } });
 }
 
 function counts(state: TabState): { done: number; total: number; running: number; blocked: number } {
@@ -184,37 +191,30 @@ function statusIcon(key: string, task: Task, badge: Badge): Node {
   return ui.icon(key, STATUS_ICONS[task.status], TONE_COLORS[badge.tone ?? "neutral"]);
 }
 
-export function taskMenu(): ItemAction[] {
-  return [
-    { action: ACTIONS.run, label: "Run", icon: "play" },
-    { action: ACTIONS.runWorktree, label: "Run in worktree", icon: "git-branch" },
-    { action: ACTIONS.variants, label: "Compare agents", icon: "exchange" },
-    { action: ACTIONS.edit, label: "Edit in editor", icon: "pencil" },
-    { action: ACTIONS.quickEdit, label: "Quick edit", icon: "note" },
-  ];
-}
-
-/** One row of the tab's task list: key = task id, two uniform lines. */
+/** One row of the tab's task list: key = task id, two uniform lines, the badge at the far right. */
 export function taskRow(state: TabState, task: Task): ListRow {
   const badge = statusBadge(task, runOf(state, task.id));
   const id = task.id;
   const node = hrow(
     id,
     [
-      statusIcon(`${id}-icon`, task, badge),
-      ui.flex(
-        `${id}-text`,
+      hrow(
+        `${id}-left`,
         [
-          ui.text(`${id}-title`, task.title, { size: "sm", weight: "medium", color: "text_strong", wrap: "no_wrap" }),
-          ui.text(`${id}-meta`, metaLine(task), { size: "xs", color: "text_muted", wrap: "no_wrap" }),
+          statusIcon(`${id}-icon`, task, badge),
+          vstack(`${id}-text`, [
+            ui.text(`${id}-title`, task.title, { size: "sm", weight: "medium", color: "text_strong", wrap: "no_wrap" }),
+            ui.text(`${id}-meta`, metaLine(task), { size: "xs", color: "text_muted", wrap: "no_wrap" }),
+          ]),
         ],
-        { direction: "column", style: { width: "fill" } },
+        { gap: "md" },
       ),
       ui.badge(`${id}-badge`, badge.text, badge.tone),
     ],
-    { width: "fill", padding: "xs" },
+    { width: "fill", padding: "sm", gap: "md" },
+    "between",
   );
-  return { node, menu: taskMenu() };
+  return { node };
 }
 
 /** Rows start..end (end exclusive) of the tab's task list. */
@@ -232,7 +232,7 @@ export function header(state: TabState): Node {
   const runnable = hasTodo(state) ? "yes" : "no";
   const left: Node[] = [
     ui.icon("header-icon", "tasks", "text_subtle"),
-    ui.text("header-title", "Tasklist", { size: "md", weight: "medium", color: "text_strong", wrap: "no_wrap" }),
+    ui.text("header-title", "Tasklist", { size: "lg", weight: "bold", color: "text_strong", wrap: "no_wrap" }),
     ui.text("header-folder", basename(state.set.root) || state.set.root, {
       size: "sm",
       color: "text_muted",
@@ -245,11 +245,18 @@ export function header(state: TabState): Node {
     if (running > 0) left.push(ui.badge("header-running", `${running} running`, "info"));
     if (blocked > 0) left.push(ui.badge("header-blocked", `${blocked} blocked`, "error"));
   }
+  const tools = hrow(
+    "header-tools",
+    [
+      iconButton("toolbar-new", ACTIONS.newTask, "add", "New task"),
+      iconButton("toolbar-generate", ACTIONS.generate, "magic", "Write plans with /improve"),
+      iconButton("toolbar-reconcile", ACTIONS.reconcile, "repeat", "Reconcile plans with /improve"),
+      iconButton("toolbar-refresh", ACTIONS.refresh, "refresh", "Refresh"),
+    ],
+    { padding: "xs", gap: "xs", radius: "full", border: "border" },
+  );
   const right: Node[] = [
-    iconButton("toolbar-new", ACTIONS.newTask, "add", "New task"),
-    iconButton("toolbar-generate", ACTIONS.generate, "magic", "Write plans with /improve"),
-    iconButton("toolbar-reconcile", ACTIONS.reconcile, "repeat", "Reconcile plans with /improve"),
-    iconButton("toolbar-refresh", ACTIONS.refresh, "refresh", "Refresh"),
+    tools,
     ui.button("toolbar-run-next", ACTIONS.runNext, {
       label: "Run next",
       icon: "play",
@@ -269,8 +276,8 @@ export function header(state: TabState): Node {
   ];
   return hrow(
     KEYS.header,
-    [hrow("header-left", left), hrow("header-right", right, { gap: "xs" })],
-    { width: "fill", height: { fixed: 38 } },
+    [hrow("header-left", left), hrow("header-right", right, { gap: "md" })],
+    { width: "fill", gap: "md" },
     "between",
   );
 }
@@ -286,7 +293,13 @@ export function sessionStrip(state: TabState): Node {
   if (session.message) {
     children.push(ui.text("session-message", session.message, { size: "sm", color: "text_muted", wrap: "wrap" }));
   }
-  return hrow(KEYS.session, children, { background: "panel", border: "border", radius: "md", padding: "sm" });
+  return hrow(KEYS.session, children, {
+    width: "fill",
+    background: "panel",
+    border: "border",
+    radius: "md",
+    padding: "md",
+  });
 }
 
 const PROBLEMS_SHOWN = 3;
@@ -300,29 +313,51 @@ export function problemsPanel(problems: string[]): Node {
       ui.text("problems-more", `and ${problems.length - PROBLEMS_SHOWN} more`, { size: "xs", color: "text_muted" }),
     );
   }
-  return ui.column(KEYS.problems, children, { gap: "xs", padding: "sm", border: "border", radius: "md", width: "fill" });
+  return vstack(KEYS.problems, children, { padding: "md", border: "border", radius: "md", width: "fill" });
 }
 
 export function tasksPane(state: TabState): Node {
+  const shown = filteredTasks(state).length;
+  const total = state.set.tasks.length;
   const filter = ui.select(
     "tasks-filter",
     ACTIONS.filter,
     FILTERS.map((value) => ({ value, label: FILTER_LABELS[value] })),
     state.filter,
   );
-  return ui.column(
+  // Fixed width and no height "fill" (that would make it grow sideways in the body row);
+  // the body row stretches it to its height.
+  return ui.flex(
     KEYS.tasksPane,
     [
-      hrow("tasks-pane-header", [label("tasks-label", "TASKS"), filter], { width: "fill" }, "between"),
-      ui.list(KEYS.tasks, filteredTasks(state).length, "single"),
+      hrow("tasks-pane-header", [
+        ui.text("tasks-label", "Tasks", { size: "sm", weight: "medium", color: "text_strong", wrap: "no_wrap" }),
+        ui.badge("tasks-count", shown === total ? `${total}` : `${shown} of ${total}`),
+      ]),
+      filter,
+      ui.list(KEYS.tasks, shown, "single"),
     ],
-    { ...PANEL, width: { fixed: 360 }, height: "fill", padding: "sm", gap: "sm" },
+    {
+      direction: "column",
+      align: "stretch",
+      style: { ...PANEL, width: { fixed: 380 }, padding: "md", gap: "md" },
+    },
   );
 }
 
-/** The plan text without its first "# Plan NNN: ..." heading, which the detail header already shows. */
+/**
+ * The plan text without its leading "# Plan NNN: ..." heading and its "## Status" section,
+ * which the detail header and chips already show.
+ */
 export function planBody(text: string): string {
-  return text.replace(/^\s*#[ \t]+Plan[ \t]+\d+[^\n]*(\r?\n)?/i, "").replace(/^\s*\n/, "");
+  const lines = text.replace(/^\s*#[ \t]+Plan[ \t]+\d+[^\n]*(\r?\n)?/i, "").split("\n");
+  const start = lines.findIndex((line) => /^##[ \t]+Status[ \t]*\r?$/i.test(line));
+  if (start !== -1) {
+    let end = lines.findIndex((line, index) => index > start && /^##[ \t]/.test(line));
+    if (end === -1) end = lines.length;
+    lines.splice(start, end - start);
+  }
+  return lines.join("\n").replace(/^(\s*\r?\n)+/, "");
 }
 
 function relativePath(root: string, file: string): string {
@@ -331,25 +366,30 @@ function relativePath(root: string, file: string): string {
 }
 
 function scroll(key: string, children: Node[]): Node {
-  return { key, type: "scroll", direction: "column", style: { width: "fill", height: "fill", gap: "sm" }, children };
+  // Style has a single padding for all sides; xs keeps the scrollbar off the text.
+  return { key, type: "scroll", direction: "column", style: { height: "fill", padding: "xs", gap: "md" }, children };
+}
+
+/** A centred empty state: icon, one line, optional buttons. */
+function emptyState(key: string, text: string, buttons: Node[], style: Style): Node {
+  const children: Node[] = [
+    ui.icon(`${key}-icon`, "tasks", "text_muted"),
+    ui.text(`${key}-text`, text, { size: "sm", color: "text_subtle", wrap: "wrap" }),
+  ];
+  if (buttons.length > 0) children.push(hrow(`${key}-buttons`, buttons));
+  return ui.flex(key, children, {
+    direction: "column",
+    align: "center",
+    justify: "center",
+    style: { ...PANEL, padding: "xl", gap: "md", ...style },
+  });
 }
 
 export function taskDetail(state: TabState): Node {
   const task = state.selected === null ? undefined : state.set.tasks.find((t) => t.id === state.selected);
+  // height "fill" inside the body row: takes the width the tasks pane leaves.
   if (task === undefined) {
-    return ui.flex(
-      KEYS.detail,
-      [
-        ui.icon("detail-empty-icon", "tasks", "text_muted"),
-        ui.text("detail-empty", "Select a task to read its plan", { size: "sm", color: "text_subtle" }),
-      ],
-      {
-        direction: "column",
-        align: "center",
-        justify: "center",
-        style: { ...PANEL, width: "fill", height: "fill", padding: "md", gap: "sm" },
-      },
-    );
+    return emptyState(KEYS.detail, "Select a task to read its plan", [], { height: "fill" });
   }
   const run = runOf(state, task.id);
   const live = isLive(run);
@@ -383,9 +423,28 @@ export function taskDetail(state: TabState): Node {
           enabled: live ? "no" : "yes",
         }),
         ui.button("detail-variants", ACTIONS.variants, { label: "Compare agents", icon: "exchange", variant: "ghost" }),
-        iconButton("detail-edit", ACTIONS.edit, "pencil", "Edit in editor"),
-        iconButton("detail-quick-edit", ACTIONS.quickEdit, "note", "Quick edit"),
       ]),
+      hrow(
+        "detail-editors",
+        [
+          iconButton("detail-edit", ACTIONS.edit, "pencil", "Edit in editor"),
+          iconButton("detail-quick-edit", ACTIONS.quickEdit, "note", "Quick edit"),
+        ],
+        { gap: "xs" },
+      ),
+    ],
+    { width: "fill" },
+    "between",
+  );
+
+  const statusRow = hrow(
+    "detail-status-row",
+    [
+      ui.flex("detail-status-label-box", [ui.text("detail-status-label", "Status", { size: "xs", color: "text_muted" })], {
+        direction: "row",
+        align: "center",
+        style: { width: { fixed: 64 } },
+      }),
       ui.select(
         "detail-status",
         ACTIONS.setStatus,
@@ -393,34 +452,42 @@ export function taskDetail(state: TabState): Node {
         task.status,
       ),
     ],
-    { width: "fill" },
-    "between",
+    {},
   );
 
-  const entries = [{ label: "File", value: relativePath(state.set.root, task.file) }];
-  if (run !== null) {
-    entries.push(
-      { label: "Agent", value: HARNESS_NAMES[run.harness] ?? run.harness },
-      { label: "Where", value: run.cwd },
-      { label: "Branch", value: run.branch ?? "—" },
-      { label: "State", value: run.state },
-      { label: "Started", value: run.startedAt },
-    );
-  }
-
   const children: Node[] = [
-    ui.column(
+    vstack(
       "detail-heading",
       [
-        ui.text("detail-plan-id", `Plan ${task.id}`, { size: "xs", color: "text_muted" }),
+        ui.text("detail-plan-id", `PLAN ${task.id}`, { size: "xs", weight: "medium", color: "text_muted" }),
         ui.text("detail-title", task.title, { size: "lg", weight: "bold", color: "text_strong", wrap: "wrap" }),
+        hrow("detail-chips", chips, { gap: "sm" }),
       ],
-      { gap: "xs" },
+      { gap: "sm", width: "fill" },
     ),
-    hrow("detail-chips", chips, { gap: "xs" }),
     actions,
-    ui.details("detail-info", entries),
+    statusRow,
+    hrow("detail-file", [
+      ui.icon("detail-file-icon", "file", "text_subtle"),
+      ui.text("detail-file-path", relativePath(state.set.root, task.file), {
+        size: "xs",
+        font: "mono",
+        color: "text_subtle",
+        wrap: "no_wrap",
+      }),
+    ]),
   ];
+  if (run !== null) {
+    children.push(
+      ui.details("detail-run-info", [
+        { label: "Agent", value: HARNESS_NAMES[run.harness] ?? run.harness },
+        { label: "Where", value: run.cwd },
+        { label: "Branch", value: run.branch ?? "—" },
+        { label: "State", value: run.state },
+        { label: "Started", value: run.startedAt },
+      ]),
+    );
+  }
   if (task.statusNote) {
     children.push(ui.text("detail-note", task.statusNote, { size: "sm", color: "warning", wrap: "wrap" }));
   }
@@ -442,35 +509,11 @@ export function taskDetail(state: TabState): Node {
   } else {
     children.push(scroll("detail-plan", [ui.markdown("plan-md", planBody(state.planText))]));
   }
-  return ui.column(KEYS.detail, children, { ...PANEL, width: "fill", height: "fill", padding: "md", gap: "sm" });
-}
-
-function noPlans(key: string): Node {
-  return ui.flex(
-    key,
-    [
-      ui.icon(`${key}-icon`, "tasks", "text_muted"),
-      ui.text(`${key}-text`, "No plans in this folder yet. Write some with /improve or add a task.", {
-        size: "sm",
-        color: "text_subtle",
-        wrap: "wrap",
-      }),
-      hrow(`${key}-buttons`, [
-        ui.button(`${key}-generate`, ACTIONS.generate, {
-          label: "Write plans with /improve",
-          icon: "magic",
-          variant: "secondary",
-        }),
-        ui.button(`${key}-new`, ACTIONS.newTask, { label: "New task", icon: "add", variant: "secondary" }),
-      ]),
-    ],
-    {
-      direction: "column",
-      align: "center",
-      justify: "center",
-      style: { ...PANEL, width: "fill", height: "fill", padding: "md", gap: "md" },
-    },
-  );
+  return ui.flex(KEYS.detail, children, {
+    direction: "column",
+    align: "stretch",
+    style: { ...PANEL, height: "fill", padding: "lg", gap: "md" },
+  });
 }
 
 export function tasklistView(state: TabState): Node {
@@ -478,24 +521,42 @@ export function tasklistView(state: TabState): Node {
   if (state.session.active) children.push(sessionStrip(state));
   if (state.set.problems.length > 0) children.push(problemsPanel(state.set.problems));
   if (state.set.dir === null) {
-    children.push(noPlans(KEYS.empty));
+    children.push(
+      emptyState(
+        KEYS.empty,
+        "No plans in this folder yet. Write some with /improve or add a task.",
+        [
+          ui.button(`${KEYS.empty}-generate`, ACTIONS.generate, {
+            label: "Write plans with /improve",
+            icon: "magic",
+            variant: "secondary",
+          }),
+          ui.button(`${KEYS.empty}-new`, ACTIONS.newTask, { label: "New task", icon: "add", variant: "secondary" }),
+        ],
+        { width: "fill", height: "fill" },
+      ),
+    );
   } else {
     children.push(
       ui.flex(KEYS.body, [tasksPane(state), taskDetail(state)], {
         direction: "row",
         align: "stretch",
-        style: { width: "fill", height: "fill", gap: "md" },
+        style: { width: "fill", height: "fill", gap: "lg" },
       }),
     );
   }
-  return ui.column(KEYS.root, children, { width: "fill", height: "fill", padding: "md", gap: "md" });
+  return ui.flex(KEYS.root, children, {
+    direction: "column",
+    align: "stretch",
+    style: { width: "fill", height: "fill", padding: "lg", gap: "lg" },
+  });
 }
 
 // ---------------------------------------------------------------------------
 // Sidebar
 // ---------------------------------------------------------------------------
 
-/** One row of the sidebar's task list: key = task id, one line. */
+/** One row of the sidebar's task list: key = task id, one line, the badge at the far right. */
 export function sidebarRow(state: TabState, task: Task): ListRow {
   const badge = statusBadge(task, runOf(state, task.id));
   const id = task.id;
@@ -504,12 +565,12 @@ export function sidebarRow(state: TabState, task: Task): ListRow {
     [
       hrow(`${id}-left`, [
         statusIcon(`${id}-icon`, task, badge),
-        ui.text(`${id}-id`, id, { size: "xs", color: "text_muted", wrap: "no_wrap" }),
+        ui.text(`${id}-id`, id, { size: "xs", font: "mono", color: "text_muted", wrap: "no_wrap" }),
         ui.text(`${id}-title`, task.title, { size: "sm", color: "text_default", wrap: "no_wrap" }),
       ]),
       ui.badge(`${id}-badge`, badge.text, badge.tone),
     ],
-    { width: "fill" },
+    { width: "fill", padding: "xs", gap: "md" },
     "between",
   );
   return { node };
@@ -524,8 +585,13 @@ export function sidebarRows(state: TabState, start = 0, end = Number.MAX_SAFE_IN
  * `state` is null when no group is open.
  */
 export function sidebarView(state: TabState | null): Node {
-  const left: Node[] = [label("sidebar-label", "TASKS")];
-  if (state !== null && state.set.dir !== null) left.push(doneChip("sidebar-done", state));
+  const left: Node[] = [
+    ui.text("sidebar-label", "Tasks", { size: "sm", weight: "medium", color: "text_strong", wrap: "no_wrap" }),
+  ];
+  if (state !== null && state.set.dir !== null) {
+    const { done, total } = counts(state);
+    left.push(ui.badge("sidebar-done", `${done}/${total}`, total > 0 && done === total ? "success" : "neutral"));
+  }
   const runnable = state !== null && hasTodo(state) ? "yes" : "no";
   const head = hrow(
     "sidebar-header",
@@ -541,7 +607,7 @@ export function sidebarView(state: TabState | null): Node {
         { gap: "xs" },
       ),
     ],
-    { width: "fill", height: { fixed: 28 } },
+    { width: "fill" },
     "between",
   );
   const children: Node[] = [head];
@@ -559,5 +625,9 @@ export function sidebarView(state: TabState | null): Node {
   } else {
     children.push(ui.list(KEYS.sidebarTasks, state.set.tasks.length, "single"));
   }
-  return ui.column(KEYS.root, children, { width: "fill", height: "fill", padding: "sm", gap: "sm" });
+  return ui.flex(KEYS.root, children, {
+    direction: "column",
+    align: "stretch",
+    style: { width: "fill", height: "fill", padding: "md", gap: "md" },
+  });
 }

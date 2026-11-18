@@ -31,7 +31,7 @@ The extension activates in groups that contain `plans/README.md`. Open it with *
   improve skill installed for that agent: <https://github.com/shadcn/improve>. **New task** writes
   an empty plan by hand and adds a TODO row.
 - **Read and edit**: click a task in the list to read its plan (the **TASKS** filter narrows the
-  list to To do, Running, Done or Blocked; a row's menu has Run, Run in worktree, Compare agents
+  list to To do, Running, Done or Blocked; the task's pane has Run, Run in worktree, Compare agents
   and the editors). **Edit in editor** opens the file in Krad's
   editor; **Quick edit** edits the Markdown in the tab. The status select writes
   `plans/README.md` (BLOCKED and REJECTED ask for a one-line reason). The tab refreshes when a plan
