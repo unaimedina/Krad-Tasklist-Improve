@@ -393,7 +393,8 @@ function planBody(text) {
   }
   return lines.join("\n").replace(/^(\s*\r?\n)+/, "");
 }
-var WHOLE_PLAN = "Whole plan";
+var WHOLE_PLAN = "\0all";
+var ALL_SECTIONS = { value: "all", label: "All" };
 var OVERVIEW = "Overview";
 function planSections(text) {
   const sections = [];
@@ -427,7 +428,7 @@ function sectionValue(index) {
   return `s${index}`;
 }
 function sectionTitle(planText, value) {
-  if (value === WHOLE_PLAN) return WHOLE_PLAN;
+  if (value === ALL_SECTIONS.value) return WHOLE_PLAN;
   const index = /^s(\d+)$/.exec(value)?.[1];
   if (index === void 0 || planText === null) return null;
   return planSections(planText)[Number(index)]?.title ?? null;
@@ -549,10 +550,12 @@ function sectionSelect(state) {
   const sections = planSections(state.planText);
   if (sections.length < 2) return null;
   const shown = shownSection(state, sections);
-  const options = sections.map((s, index2) => ({ value: sectionValue(index2), label: s.title }));
-  options.push({ value: WHOLE_PLAN, label: WHOLE_PLAN });
+  const options = [
+    { ...ALL_SECTIONS },
+    ...sections.map((s, index2) => ({ value: sectionValue(index2), label: s.title }))
+  ];
   const index = sections.findIndex((s) => s.title === shown?.title);
-  const value = shown?.title === WHOLE_PLAN ? WHOLE_PLAN : sectionValue(Math.max(0, index));
+  const value = shown?.title === WHOLE_PLAN ? ALL_SECTIONS.value : sectionValue(Math.max(0, index));
   return ui.select(KEYS.planSections, ACTIONS.section, options, value);
 }
 function planPane(state) {
@@ -626,6 +629,7 @@ function viewShape(state) {
 }
 export {
   ACTIONS,
+  ALL_SECTIONS,
   APP_ROW_PAD_X,
   FILTERS,
   KEYS,

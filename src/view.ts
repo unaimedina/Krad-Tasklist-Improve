@@ -72,7 +72,7 @@ export interface TabState {
   filter: Filter;             // task list filter of the view
   busy?: readonly string[];   // actions still starting: "run:<id>", "run-worktree:<id>", "run-next"
   layout?: Layout;            // side by side (default) or stacked panes
-  section?: string | null;    // title of the plan section shown, WHOLE_PLAN, or null for the first
+  section?: string | null;    // title of the plan section shown, WHOLE_PLAN (All), or null for the first
 }
 
 /** Side by side: tasks pane left, plan right. Stacked: tasks pane on top, plan under it. */
@@ -506,8 +506,13 @@ export interface PlanSection {
   text: string;  // the section's Markdown without its heading line
 }
 
-/** Value of the section select that shows the whole plan. */
-export const WHOLE_PLAN = "Whole plan";
+/**
+ * What a view remembers when it shows the whole plan (TabState.section). Not a heading's text: a
+ * NUL cannot be in one, so a plan with a "## All" section still shows that section alone.
+ */
+export const WHOLE_PLAN = "\u0000all";
+/** The section select's first option, which shows the whole plan. */
+export const ALL_SECTIONS = { value: "all", label: "All" } as const;
 const OVERVIEW = "Overview";
 
 /**
@@ -540,7 +545,10 @@ export function planSections(text: string): PlanSection[] {
   return sections;
 }
 
-/** The section a view shows: the one it chose if the plan still has it, else the first. */
+/**
+ * The section a view shows: the whole plan if it chose All, the section it chose if the plan still
+ * has it, else the first (the default: the whole plan is the heaviest Markdown to render).
+ */
 function shownSection(state: TabState, sections: PlanSection[]): PlanSection | null {
   if (state.section === WHOLE_PLAN && state.planText !== null) return { title: WHOLE_PLAN, text: planBody(state.planText) };
   return sections.find((s) => s.title === state.section) ?? sections[0] ?? null;
@@ -553,7 +561,7 @@ export function sectionValue(index: number): string {
 
 /** The section title an option value of the section select stands for, or null. */
 export function sectionTitle(planText: string | null, value: string): string | null {
-  if (value === WHOLE_PLAN) return WHOLE_PLAN;
+  if (value === ALL_SECTIONS.value) return WHOLE_PLAN;
   const index = /^s(\d+)$/.exec(value)?.[1];
   if (index === undefined || planText === null) return null;
   return planSections(planText)[Number(index)]?.title ?? null;
@@ -696,16 +704,18 @@ export function planScroll(state: TabState): Node {
   };
 }
 
-/** The section select: one chip per section, then "Whole plan". Null for a plan of one section. */
+/** The section select: "All" first, then one chip per section. Null for a plan of one section. */
 export function sectionSelect(state: TabState): Node | null {
   if (state.planText === null) return null;
   const sections = planSections(state.planText);
   if (sections.length < 2) return null;
   const shown = shownSection(state, sections);
-  const options = sections.map((s, index) => ({ value: sectionValue(index), label: s.title }));
-  options.push({ value: WHOLE_PLAN, label: WHOLE_PLAN });
+  const options: Choice[] = [
+    { ...ALL_SECTIONS },
+    ...sections.map((s, index) => ({ value: sectionValue(index), label: s.title })),
+  ];
   const index = sections.findIndex((s) => s.title === shown?.title);
-  const value = shown?.title === WHOLE_PLAN ? WHOLE_PLAN : sectionValue(Math.max(0, index));
+  const value = shown?.title === WHOLE_PLAN ? ALL_SECTIONS.value : sectionValue(Math.max(0, index));
   return ui.select(KEYS.planSections, ACTIONS.section, options, value);
 }
 

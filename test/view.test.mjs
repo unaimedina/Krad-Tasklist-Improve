@@ -14,6 +14,7 @@ import {
   ROW_TEXT_W,
   STACK_TASKS_H,
   WHOLE_PLAN,
+  ALL_SECTIONS,
   planScroll,
   planSections,
   planSignature,
@@ -342,7 +343,7 @@ test("taskDetail shows the plan, the note, and the quick editor", () => {
   // Two sections: a section select over the scroll, the first section shown.
   const sectioned = taskDetail(makeState({ selected: "003", planText: twoSections }));
   const sections = find(sectioned, (n) => n.key === KEYS.planSections);
-  assert.deepEqual(sections.options.map((o) => o.label), ["Overview", "Steps", WHOLE_PLAN]);
+  assert.deepEqual(sections.options.map((o) => o.label), ["All", "Overview", "Steps"]);
   assert.equal(sections.value, sectionValue(0));
   assert.equal(find(sectioned, (n) => n.type === "markdown").text, "Intro.");
   const note = find(detail, (n) => n.type === "text" && n.text === "needs an API key");
@@ -672,7 +673,7 @@ test("planSections splits the plan on its ## headings, without the H1 and the St
   assert.deepEqual(planSections(""), []);
 });
 
-test("the plan pane renders one section at a time; Whole plan renders everything", () => {
+test("the plan pane renders one section at a time; All, first in the select, renders everything", () => {
   const base = makeState({ selected: "003", planText: PLAN });
   const markdown = (state) => walk(planScroll(state)).filter((n) => n.type === "markdown");
   // Default: the first section, alone.
@@ -684,16 +685,32 @@ test("the plan pane renders one section at a time; Whole plan renders everything
   assert.ok(markdown(whole)[0].text.includes("Because.") && markdown(whole)[0].text.includes("tests pass"));
   // A section that is gone falls back to the first.
   assert.equal(markdown({ ...base, section: "Gone" })[0].text, "> **Executor instructions**: follow the steps.");
-  // The select: one option per section and Whole plan, the shown one selected.
+  // The select: All first, then one option per section; no other whole-plan option at the end.
   const select = sectionSelect(steps);
   assert.equal(select.action, ACTIONS.section);
-  assert.deepEqual(select.options.map((o) => o.label), ["Overview", "Why this matters", "Steps", "Done criteria", WHOLE_PLAN]);
+  assert.deepEqual(select.options.map((o) => o.label), ["All", "Overview", "Why this matters", "Steps", "Done criteria"]);
+  assert.deepEqual(select.options[0], { value: ALL_SECTIONS.value, label: "All" });
+  assert.equal(select.options.filter((o) => o.value === ALL_SECTIONS.value).length, 1);
+  assert.ok(!select.options.some((o) => /whole plan/i.test(o.label)));
   assert.equal(select.value, sectionValue(2));
-  assert.equal(sectionSelect(whole).value, WHOLE_PLAN);
-  // Option values map back to titles.
+  // The default is the first real section (Overview), not All: the whole plan is the heaviest to render.
+  assert.equal(sectionSelect(base).value, sectionValue(0));
+  assert.equal(sectionSelect({ ...base, section: null }).value, sectionValue(0));
+  // All selected: the select shows it, the scroll has the whole plan in one Markdown node.
+  assert.equal(sectionSelect(whole).value, ALL_SECTIONS.value);
+  assert.equal(markdown(whole).length, 1);
+  assert.equal(markdown(whole)[0].text, planBody(PLAN));
+  // Option values map back to titles; All maps to the whole plan.
   assert.equal(sectionTitle(PLAN, sectionValue(1)), "Why this matters");
-  assert.equal(sectionTitle(PLAN, WHOLE_PLAN), WHOLE_PLAN);
+  assert.equal(sectionTitle(PLAN, ALL_SECTIONS.value), WHOLE_PLAN);
   assert.equal(sectionTitle(PLAN, "s99"), null);
+  // A plan with its own "## All" section: that section and the All option stay apart.
+  const own = makeState({ selected: "003", planText: "# Plan 003: x\n\nIntro.\n\n## All\n\nOnly this.\n" });
+  const ownSelect = sectionSelect({ ...own, section: "All" });
+  assert.deepEqual(ownSelect.options.map((o) => o.label), ["All", "Overview", "All"]);
+  assert.equal(ownSelect.value, sectionValue(1));
+  assert.equal(markdown({ ...own, section: "All" })[0].text, "Only this.");
+  assert.equal(markdown({ ...own, section: WHOLE_PLAN })[0].text, planBody(own.planText));
   // The signature changes with the shown section, not with other sections' text.
   const other = { ...base, planText: PLAN.replace("Because.", "Because, really.") };
   assert.equal(planSignature(base), planSignature({ ...other }));

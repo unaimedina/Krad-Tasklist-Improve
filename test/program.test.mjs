@@ -508,7 +508,9 @@ test("switching section patches only the plan scroll, with that section's Markdo
   const chosen = await waitFor((m) => isPatch(m) && patchKeys(m).includes("detail"));
   const detail = chosen.params.patches[0].node;
   const select = findNode(detail, "plan-sections");
-  assert.deepEqual(select.options.map((o) => o.label), ["Overview", "Why this matters", "Steps", "Whole plan"]);
+  assert.deepEqual(select.options.map((o) => o.label), ["All", "Overview", "Why this matters", "Steps"]);
+  // The default is Overview, not All.
+  assert.equal(select.value, select.options[1].value);
   assert.equal(findNode(detail, "plan-md").text, "Intro text.");
   const steps = select.options.find((o) => o.label === "Steps").value;
   notify("view/event", { ...ref, event: { kind: "select", action: "section", value: steps } });
@@ -517,6 +519,16 @@ test("switching section patches only the plan scroll, with that section's Markdo
   assert.equal(findNode(switched.params.patches[0].node, "plan-md").text, "1. Do it.");
   // The choice holds across renders.
   assert.equal(findNode((await request("view/render", ref)).result, "plan-md").text, "1. Do it.");
+
+  // All: the whole plan (without its heading and Status section) in the scroll, the select on All.
+  notify("view/event", { ...ref, event: { kind: "select", action: "section", value: "all" } });
+  const all = await waitFor((m) => isPatch(m) && JSON.stringify(m.params.patches).includes("Because."));
+  assert.deepEqual(patchKeys(all), ["plan-scroll"]);
+  const whole = findNode(all.params.patches[0].node, "plan-md").text;
+  assert.ok(whole.startsWith("Intro text."), whole.slice(0, 40));
+  assert.ok(whole.includes("## Why this matters") && whole.includes("1. Do it."));
+  assert.ok(!whole.includes("# Plan 005") && !whole.includes("Priority"));
+  assert.equal(findNode((await request("view/render", ref)).result, "plan-sections").value, "all");
 });
 
 test("rows() serves the list from memory: it works with the plans folder gone", async (t) => {
