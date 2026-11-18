@@ -2,6 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   ACTIONS,
+  busyKey,
   KEYS,
   filteredTasks,
   header,
@@ -13,6 +14,7 @@ import {
   taskDetail,
   taskRows,
   tasklistView,
+  viewShape,
 } from "../dist/view.js";
 
 const ROOT = "/repo";
@@ -95,23 +97,31 @@ test("the tab root fills its tab and the tasks pane holds a single-selection lis
   assert.equal(body.style.gap, "lg");
   // Left pane: fixed width, stretched by the body row; right pane grows sideways with height fill.
   const pane = find(view, (n) => n.key === KEYS.tasksPane);
-  assert.deepEqual(pane.style.width, { fixed: 420 });
+  assert.deepEqual(pane.style.width, { fixed: 440 });
   assert.notEqual(pane.style.height, "fill");
   assert.equal(pane.style.padding, "md");
   const detail = find(view, (n) => n.key === KEYS.detail);
   assert.equal(detail.style.height, "fill");
   assert.equal(detail.style.width, undefined);
   // Pane header on its own line, the filter chips on the next one.
-  assert.deepEqual(pane.children.map((n) => n.key), ["tasks-pane-header", "tasks-filter", KEYS.tasks]);
+  assert.deepEqual(pane.children.map((n) => n.key), [KEYS.tasksPaneHeader, "tasks-filter", KEYS.tasks]);
   assert.equal(find(pane, (n) => n.key === "tasks-count").text, "4");
   const list = find(pane, (n) => n.key === KEYS.tasks);
   assert.equal(list.type, "list");
   assert.equal(list.selection, "single");
   assert.equal(list.count, 4);
   assert.ok(!find(view, (n) => n.type === "tree"));
+  // An empty view keeps the pane, its header and its filter, with one sentence instead of the list.
+  const state = makeState({ filter: "blocked" });
+  state.set.tasks = state.set.tasks.filter((t) => t.status !== "BLOCKED");
+  const empty = tasklistView(state);
+  const emptyPane = find(empty, (n) => n.key === KEYS.tasksPane);
+  assert.deepEqual(emptyPane.children.map((n) => n.key), [KEYS.tasksPaneHeader, "tasks-filter", KEYS.tasksEmpty]);
+  assert.equal(find(emptyPane, (n) => n.key === KEYS.tasksEmpty).text, "No task is blocked.");
+  assert.equal(find(emptyPane, (n) => n.key === "tasks-count").text, "0 of 3");
 });
 
-test("taskRows returns one uniform row per task without menus", () => {
+test("taskRows returns one uniform row per task: id, title, one status mark", () => {
   const rows = taskRows(makeState());
   assert.deepEqual(rows.map((r) => r.node.key), ["001", "002", "003", "004"]);
   const byKey = Object.fromEntries(rows.map((r) => [r.node.key, r]));
@@ -120,27 +130,34 @@ test("taskRows returns one uniform row per task without menus", () => {
   assert.equal(badge.tone, "info");
   assert.equal(find(byKey["002"].node, (n) => n.key === "002-title").text, "Task 002");
   assert.equal(find(byKey["002"].node, (n) => n.key === "002-meta").text, "P1 · M · after 001");
-  assert.equal(find(byKey["001"].node, (n) => n.type === "icon").icon, "check");
-  assert.equal(find(byKey["003"].node, (n) => n.type === "icon").color, "error");
-  // Uniform shape: every row has the same node types in the same order.
-  const shape = (row) => walk(row.node).map((n) => n.type).join(",");
-  assert.equal(new Set(rows.map(shape)).size, 1);
+  // A spinner on the task an agent works on, in the reserved status column; none elsewhere.
+  assert.ok(find(byKey["002"].node, (n) => n.type === "spinner"));
+  for (const id of ["001", "003", "004"]) assert.ok(!find(byKey[id].node, (n) => n.type === "spinner"), id);
   for (const row of rows) {
     assert.equal(row.menu, undefined);
-    // Row body: full width (one highlight width for all rows), centred, badge at the far right.
+    // Row body: full width (one highlight width for all rows), centred, status at the far right.
     assert.equal(row.node.align, "center");
     assert.equal(row.node.justify, "between");
     assert.equal(row.node.style.width, "fill");
     assert.equal(row.node.style.padding, "sm");
-    // Fixed-width leading column with the id over the status icon.
+    // One status mark per row: the pill. No status icon besides it.
+    assert.equal(walk(row.node).filter((n) => n.type === "badge").length, 1);
+    assert.ok(!find(row.node, (n) => n.type === "icon"));
+    // Fixed-width columns on both sides, so titles never move when a status or a spinner changes.
     assert.equal(find(row.node, (n) => n.key.endsWith("-number")).text, row.node.key);
     assert.deepEqual(find(row.node, (n) => n.key.endsWith("-lead")).style.width, { fixed: 36 });
-    assert.equal(row.node.children.at(-1).type, "badge");
+    const status = row.node.children.at(-1);
+    assert.equal(status.key, `${row.node.key}-status`);
+    assert.deepEqual(status.style.width, { fixed: 104 });
+    assert.equal(status.justify, "end");
     assert.equal(find(row.node, (n) => n.key.endsWith("-title-2")).style.wrap, "no_wrap");
     assert.equal(find(row.node, (n) => n.key.endsWith("-text")).align, "start");
     const keys = walk(row.node).map((n) => n.key);
     assert.equal(new Set(keys).size, keys.length);
   }
+  // Uniform shape: rows differ only inside the status column.
+  const shape = (row) => walk({ ...row.node, children: row.node.children.slice(0, -1) }).map((n) => n.type).join(",");
+  assert.equal(new Set(rows.map(shape)).size, 1);
   assert.deepEqual(taskRows(makeState(), 1, 3).map((r) => r.node.key), ["002", "003"]);
 });
 
@@ -179,7 +196,7 @@ test("statusBadge maps every status and live states", () => {
   });
 });
 
-test("header: chips, ghost icon buttons, one primary, stop during a session", () => {
+test("header: chips, ghost icon buttons, no accent, stop during a session, busy Run next", () => {
   const idle = header(makeState());
   assert.equal(idle.key, KEYS.header);
   assert.equal(idle.justify, "between");
@@ -194,9 +211,9 @@ test("header: chips, ghost icon buttons, one primary, stop during a session", ()
     [ACTIONS.newTask, ACTIONS.generate, ACTIONS.reconcile, ACTIONS.refresh],
   );
   assert.equal(find(idle, (n) => n.key === "header-right").style.gap, "md");
-  const nodes = walk(idle);
-  assert.equal(nodes.filter((n) => n.variant === "primary").length, 1);
-  assert.equal(find(idle, (n) => n.variant === "primary").action, ACTIONS.autoRun);
+  // The one accent of the screen is the selected task's Run: none in the header.
+  assert.ok(!walk(idle).some((n) => n.variant === "primary"));
+  assert.equal(find(idle, (n) => n.action === ACTIONS.autoRun).variant, "secondary");
   for (const action of [ACTIONS.newTask, ACTIONS.generate, ACTIONS.reconcile, ACTIONS.refresh]) {
     const button = find(idle, (n) => n.action === action);
     assert.equal(button.variant, "ghost", action);
@@ -222,6 +239,14 @@ test("header: chips, ghost icon buttons, one primary, stop during a session", ()
   assert.equal(find(none, (n) => n.action === ACTIONS.autoRun).enabled, "no");
   assert.equal(find(none, (n) => n.key === "header-done").tone, "success");
   assert.ok(!find(none, (n) => n.key === "header-running"));
+
+  // While Run next starts an agent, its button says so and cannot be pressed twice.
+  const starting = header(makeState({ busy: [busyKey.runNext] }));
+  const next = find(starting, (n) => n.action === ACTIONS.runNext);
+  assert.equal(next.label, "Starting…");
+  assert.equal(next.icon, "loading");
+  assert.equal(next.enabled, "no");
+  assert.equal(next.key, "toolbar-run-next");
 });
 
 test("planBody drops the leading Plan heading and the Status section", () => {
@@ -250,8 +275,16 @@ test("taskDetail shows the plan, the note, and the quick editor", () => {
   assert.equal(detail.style.height, "fill");
   assert.equal(detail.style.padding, "lg");
   assert.equal(detail.style.gap, "md");
-  assert.equal(find(detail, (n) => n.key === "detail-plan-id").text, "PLAN 003");
-  assert.equal(find(detail, (n) => n.key === "detail-chips").style.gap, "sm");
+  // Top (patched alone on data changes), divider, plan scroll (left alone so it keeps its scroll).
+  assert.deepEqual(detail.children.map((n) => n.key), [KEYS.detailTop, "detail-divider", KEYS.plan]);
+  assert.equal(detail.align, "stretch");
+  assert.equal(detail.children[0].align, "stretch");
+  // Sentence case, no tracked uppercase eyebrow.
+  assert.equal(find(detail, (n) => n.key === "detail-plan-id").text, "Plan 003");
+  const chipsRow = find(detail, (n) => n.key === "detail-chips");
+  assert.equal(chipsRow.style.gap, "sm");
+  // One status mark: the select. No status chip repeats it.
+  assert.ok(!find(chipsRow, (n) => n.text === "blocked"));
   // Actions: run group on the left, icon-only editors on the right.
   const actionsRow = find(detail, (n) => n.key === "detail-actions");
   assert.equal(actionsRow.justify, "between");
@@ -264,7 +297,7 @@ test("taskDetail shows the plan, the note, and the quick editor", () => {
   // The status select has a line of its own, next to its label only.
   const statusRow = find(detail, (n) => n.key === "detail-status-row");
   assert.deepEqual(statusRow.children.map((n) => n.type), ["flex", "select"]);
-  assert.ok(detail.children.includes(statusRow));
+  assert.ok(detail.children[0].children.includes(statusRow));
   assert.ok(!find(actionsRow, (n) => n.type === "select"));
   // File: one small mono line, no details table without a run.
   assert.equal(find(detail, (n) => n.key === "detail-file-path").text, "plans/003-task-003.md");
@@ -298,6 +331,31 @@ test("taskDetail shows the plan, the note, and the quick editor", () => {
   assert.equal(find(running, (n) => n.key === "detail-run-worktree").enabled, "no");
   const info = find(running, (n) => n.type === "details");
   assert.ok(info.entries.some((e) => e.label === "Agent" && e.value === "Claude Code"));
+  // The live state is the one chip the status select cannot say.
+  assert.equal(find(running, (n) => n.key === "detail-live").text, "running");
+
+  // While Run starts the agent: same button, same key, "Starting…", disabled; worktree disabled too.
+  const starting = taskDetail(makeState({ selected: "004", planText: plan, busy: [busyKey.run("004")] }));
+  const run = find(starting, (n) => n.key === "detail-run");
+  assert.equal(run.label, "Starting…");
+  assert.equal(run.icon, "loading");
+  assert.equal(run.enabled, "no");
+  assert.equal(find(starting, (n) => n.key === "detail-run-worktree").enabled, "no");
+});
+
+test("viewShape changes only with the structure, not with the data shown", () => {
+  const base = viewShape(makeState({ selected: "003", planText: "a" }));
+  assert.equal(viewShape(makeState({ selected: "003", planText: "b" })), base);
+  assert.equal(viewShape(makeState({ selected: "003", planText: "a", runs: [] })), base);
+  assert.notEqual(viewShape(makeState({ selected: "004", planText: "a" })), base);
+  assert.notEqual(viewShape(makeState({ selected: "003", planText: "a", editing: true })), base);
+  assert.notEqual(
+    viewShape(makeState({ selected: "003", planText: "a", session: { active: true, done: 0, total: 1, running: 0, message: null } })),
+    base,
+  );
+  const noBlocked = makeState({ selected: "003", planText: "a", filter: "blocked" });
+  noBlocked.set.tasks = noBlocked.set.tasks.map((t) => (t.status === "BLOCKED" ? { ...t, status: "TODO" } : t));
+  assert.notEqual(viewShape(noBlocked), viewShape(makeState({ selected: "003", planText: "a", filter: "blocked" })));
 });
 
 test("tasklistView without a plans folder shows the empty state", () => {
@@ -448,15 +506,19 @@ function ancestors(root, key, path = []) {
   return null;
 }
 
-test("every row highlight spans the whole pane: no ancestor of the list shrinks its rows", () => {
+test("every row highlight spans the whole pane: every ancestor of the list and the plan stretches", () => {
+  // The renderer centres a flex's children when align is not set: every ancestor sets stretch explicitly.
   const states = [makeState(), makeState({ selected: "002", planText: "# x" }), makeState({ filter: "todo" })];
   const page = { groups: [{ value: ROOT, label: "repo" }, { value: "/other", label: "other" }] };
   for (const state of states) {
     for (const view of [tasklistView(state), tasklistView(state, page)]) {
       const path = ancestors(view, KEYS.tasks);
       assert.deepEqual(path.map((n) => n.key), [KEYS.root, KEYS.body, KEYS.tasksPane]);
-      for (const node of path) {
-        assert.ok(node.align !== "start" && node.align !== "center", `${node.key} align ${node.align}`);
+      for (const node of path) assert.equal(node.align, "stretch", node.key);
+      const planPath = ancestors(view, KEYS.plan);
+      if (planPath !== null) {
+        assert.deepEqual(planPath.map((n) => n.key), [KEYS.root, KEYS.body, KEYS.detail]);
+        for (const node of planPath) assert.equal(node.align, "stretch", node.key);
       }
     }
     for (const row of taskRows(state)) {
@@ -466,4 +528,5 @@ test("every row highlight spans the whole pane: no ancestor of the list shrinks 
       assert.equal(row.node.justify, "between", row.node.key);
     }
   }
+  assert.equal(noGroupView().align, "stretch");
 });

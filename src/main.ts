@@ -33,13 +33,22 @@ import { HARNESSES, TASK_STATUSES } from "./types.js";
 import type { Filter, PageChrome, SessionInfo, TabState } from "./view.js";
 import {
   ACTIONS,
+  busyKey,
+  detailTop,
   FILTERS,
   filteredTasks,
+  header,
   KEYS,
   noGroupView,
+  planPane,
+  problemsPanel,
+  sessionStrip,
   taskDetail,
   taskRows,
   tasklistView,
+  tasksPane,
+  tasksPaneHeader,
+  viewShape,
 } from "./view.js";
 
 const run = promisify(execFile);
@@ -187,6 +196,10 @@ interface OpenView {
   root: string | null;
   /** The workspace groups, for the page's group select. */
   groups: { root: string; name: string }[];
+  /** viewShape() of the last UI sent; null = not rendered yet. */
+  shape: string | null;
+  /** The plan text last sent, to leave the plan scroll alone when it did not change. */
+  planText: string | null;
 }
 
 /** Rendered views, by view id + instance. */
@@ -228,6 +241,7 @@ function viewState(view: string, root: string, withPlan = true): TabState {
     planText: withPlan && task ? readText(task.file) : null,
     session: sessionInfo(root),
     filter: ui.filter,
+    busy: [...(busy.get(normPath(root)) ?? [])],
   };
 }
 
@@ -244,9 +258,13 @@ async function openViewOf(ref: ViewRef, context: Context, reresolve: boolean): P
   const id = refId(ref);
   let open = openViews.get(id);
   if (!open) {
-    open = { ref: { view: ref.view, instance: ref.instance }, root: null, groups: [] };
+    open = { ref: { view: ref.view, instance: ref.instance }, root: null, groups: [], shape: null, planText: null };
     openViews.set(id, open);
     reresolve = true;
+    if (ref.view === PAGE) Object.assign(open, await resolvePage(context));
+    else open.root = ref.instance ?? null;
+    if (open.root !== null) uiOf(ref.view, open.root).filter = "all";
+    return open;
   }
   if (reresolve) {
     if (ref.view === PAGE) Object.assign(open, await resolvePage(context));
@@ -255,11 +273,25 @@ async function openViewOf(ref: ViewRef, context: Context, reresolve: boolean): P
   return open;
 }
 
+/** The page's extras (Open in a tab, the group select), or null for the tab. */
+function chromeOf(open: OpenView): PageChrome | null {
+  return open.ref.view === PAGE ? { groups: open.groups.map((g) => ({ value: g.root, label: g.name })) } : null;
+}
+
+/** Remembers what a view now shows, for the next refresh. */
+function remember(open: OpenView, state: TabState | null): void {
+  open.shape = state === null ? null : viewShape(state);
+  open.planText = state?.planText ?? null;
+}
+
 function build(open: OpenView): Node {
-  if (open.root === null) return noGroupView();
-  const page: PageChrome | null =
-    open.ref.view === PAGE ? { groups: open.groups.map((g) => ({ value: g.root, label: g.name })) } : null;
-  return tasklistView(viewState(open.ref.view, open.root), page);
+  if (open.root === null) {
+    remember(open, null);
+    return noGroupView();
+  }
+  const state = viewState(open.ref.view, open.root);
+  remember(open, state);
+  return tasklistView(state, chromeOf(open));
 }
 
 function patchOpen(open: OpenView, context: Context, patches: Patch[]): void {
@@ -270,9 +302,36 @@ function patchOpen(open: OpenView, context: Context, patches: Patch[]): void {
   }
 }
 
-/** Replaces the whole UI of one view. */
-function refreshOpen(open: OpenView, context: Context): void {
+/** Replaces the whole UI of one view: for structural changes (a session starts, a group switch). */
+function replaceOpen(open: OpenView, context: Context): void {
   patchOpen(open, context, [patch.replace(build(open)), patch.invalidate(KEYS.tasks)]);
+}
+
+/**
+ * Brings one view up to date with the data. When its structure is unchanged, only the nodes that
+ * show data are patched in place (header, strips, the list's count and rows, the top of the plan
+ * pane), so nothing flashes, the list keeps its scroll, the plan keeps its scroll and an open
+ * quick editor keeps what is being typed. Otherwise the whole UI is replaced.
+ */
+function refreshOpen(open: OpenView, context: Context): void {
+  if (open.root === null || open.shape === null) return replaceOpen(open, context);
+  const state = viewState(open.ref.view, open.root);
+  if (viewShape(state) !== open.shape) return replaceOpen(open, context);
+  const patches: Patch[] = [patch.replace(header(state, chromeOf(open)))];
+  if (state.session.active) patches.push(patch.replace(sessionStrip(state)));
+  if (state.set.problems.length > 0) patches.push(patch.replace(problemsPanel(state.set.problems)));
+  if (state.set.dir !== null) {
+    patches.push(patch.replace(tasksPaneHeader(state)));
+    const shown = filteredTasks(state).length;
+    if (shown > 0) patches.push(patch.setCount(KEYS.tasks, shown), patch.invalidate(KEYS.tasks));
+  }
+  const task = state.selected === null ? undefined : state.set.tasks.find((t) => t.id === state.selected);
+  if (task !== undefined) {
+    patches.push(patch.replace(detailTop(state, task)));
+    if (!state.editing && state.planText !== open.planText) patches.push(patch.replace(planPane(state)));
+  }
+  if (!state.editing) open.planText = state.planText;
+  patchOpen(open, context, patches);
 }
 
 /** Refreshes every view of a group: they share the data, not the selection. */
@@ -286,8 +345,9 @@ function refreshRoot(root: string, context: Context): void {
 function refreshAll(context: Context): void {
   for (const open of openViews.values()) {
     if (open.ref.view === PAGE) {
+      const before = open.root;
       void openViewOf(open.ref, context, true)
-        .then(() => refreshOpen(open, context))
+        .then(() => (before === open.root ? refreshOpen(open, context) : replaceOpen(open, context)))
         .catch((error) => context.app.log("warn", `refresh of the Tasks page failed: ${failure(error)}`));
     } else {
       refreshOpen(open, context);
@@ -295,17 +355,50 @@ function refreshAll(context: Context): void {
   }
 }
 
-/** Replaces only the detail pane and re-asks the list rows (selection highlight). */
+/** A new selection or editor state: replaces only the plan pane and re-asks the rows (highlight). */
 function refreshDetail(open: OpenView, context: Context): void {
   if (open.root === null) return;
-  patchOpen(open, context, [patch.replace(taskDetail(viewState(open.ref.view, open.root))), patch.invalidate(KEYS.tasks)]);
+  const state = viewState(open.ref.view, open.root);
+  if (viewShape(state).split("|").slice(0, 4).join("|") !== (open.shape ?? "").split("|").slice(0, 4).join("|")) {
+    return replaceOpen(open, context);
+  }
+  remember(open, state);
+  patchOpen(open, context, [patch.replace(taskDetail(state)), patch.invalidate(KEYS.tasks)]);
 }
 
-/** Re-counts and re-asks the list rows after a filter change. */
+/** A filter switch: replaces the tasks pane (its count, its list or its empty sentence). */
 function refreshList(open: OpenView, context: Context): void {
   if (open.root === null) return;
-  const count = filteredTasks(viewState(open.ref.view, open.root, false)).length;
-  patchOpen(open, context, [patch.setCount(KEYS.tasks, count), patch.invalidate(KEYS.tasks)]);
+  const state = viewState(open.ref.view, open.root, false);
+  if (open.shape !== null) open.shape = viewShape({ ...state, planText: open.planText });
+  patchOpen(open, context, [patch.replace(tasksPane(state)), patch.invalidate(KEYS.tasks)]);
+}
+
+// ---------------------------------------------------------------------------
+// Busy actions: an agent that is starting shows on its button until its terminal is open
+// ---------------------------------------------------------------------------
+
+const busy = new Map<string, Set<string>>();
+
+function busyOf(root: string): Set<string> {
+  const key = normPath(root);
+  let set = busy.get(key);
+  if (!set) {
+    set = new Set();
+    busy.set(key, set);
+  }
+  return set;
+}
+
+async function whileBusy<T>(root: string, key: string, context: Context, action: () => Promise<T>): Promise<T> {
+  busyOf(root).add(key);
+  refreshRoot(root, context);
+  try {
+    return await action();
+  } finally {
+    busyOf(root).delete(key);
+    refreshRoot(root, context);
+  }
 }
 
 /** Opens the Tasklist tab of a root. */
@@ -733,10 +826,10 @@ async function taskAction(open: OpenView, root: string, action: string, id: stri
   const { task } = found;
   switch (action) {
     case ACTIONS.run:
-      await runTask(root, task, "here", context);
+      await whileBusy(root, busyKey.run(task.id), context, () => runTask(root, task, "here", context));
       return;
     case ACTIONS.runWorktree:
-      await runTask(root, task, "worktree", context);
+      await whileBusy(root, busyKey.runWorktree(task.id), context, () => runTask(root, task, "worktree", context));
       return;
     case ACTIONS.variants:
       await runVariants(root, task, context);
@@ -780,7 +873,7 @@ async function onViewEvent(event: ViewEvent, ref: ViewRef, context: Context): Pr
         case ACTIONS.openTab:
           return await openTab(root, context);
         case ACTIONS.runNext:
-          return await runNext(root, context);
+          return void (await whileBusy(root, busyKey.runNext, context, () => runNext(root, context)));
         case ACTIONS.autoRun:
           return await startAutoRun(root, context);
         case ACTIONS.stop:
@@ -802,7 +895,8 @@ async function onViewEvent(event: ViewEvent, ref: ViewRef, context: Context): Pr
       if (open.ref.view !== PAGE) return;
       pageChoice = event.value;
       await openViewOf(open.ref, context, true);
-      return refreshOpen(open, context);
+      uiOf(open.ref.view, open.root ?? "").filter = "all";
+      return replaceOpen(open, context);
     }
     if (event.kind === "select" && event.action === ACTIONS.filter) {
       if (FILTERS.includes(event.value as Filter)) ui.filter = event.value as Filter;
@@ -992,7 +1086,7 @@ createExtension({
     for (const open of openViews.values()) {
       if (open.ref.view === PAGE && inPlans) {
         void openViewOf(open.ref, context, true)
-          .then(() => refreshOpen(open, context))
+          .then(() => replaceOpen(open, context))
           .catch((error) => context.app.log("warn", `refresh of the Tasks page failed: ${failure(error)}`));
         continue;
       }

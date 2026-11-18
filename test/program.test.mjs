@@ -161,7 +161,7 @@ test("choosing a task patches the detail pane with its plan Markdown", async (t)
   assert.equal(findNode(again.result, "plan-md")?.text, md.text);
 });
 
-test("the filter select re-counts the task list", async (t) => {
+test("the filter select replaces the tasks pane with the new count; a reopened view starts on All", async (t) => {
   const dir = fixtureRoot();
   const { child, request, notify, waitFor } = startProgram([{ id: "g", name: "g", root: dir }]);
   t.after(() => {
@@ -172,12 +172,54 @@ test("the filter select re-counts the task list", async (t) => {
   await request("view/render", { view: "tasklist", instance: dir });
   notify("view/event", { view: "tasklist", instance: dir, event: { kind: "select", action: "filter", value: "done" } });
   const message = await waitFor((m) => m.method === "view/patch");
-  assert.deepEqual(message.params.patches, [
-    { op: "set_count", key: "tasks", count: 1 },
-    { op: "invalidate", key: "tasks" },
-  ]);
+  const [replace, invalidate] = message.params.patches;
+  assert.equal(replace.op, "replace");
+  assert.equal(replace.node.key, "tasks-pane");
+  assert.equal(findNode(replace.node, "tasks")?.count, 1);
+  assert.equal(findNode(replace.node, "tasks-count")?.text, "1 of 6");
+  assert.equal(findNode(replace.node, "tasks-filter")?.value, "done");
+  assert.deepEqual(invalidate, { op: "invalidate", key: "tasks" });
   const rows = await request("view/rows", { view: "tasklist", instance: dir, node: "tasks", start: 0, end: 10 });
   assert.deepEqual(rows.result.rows.map((r) => r.node.key), ["001"]);
+
+  // The page has its own filter, on All.
+  const page = await request("view/render", { view: "tasks" });
+  assert.equal(findNode(page.result, "tasks-filter")?.value, "all");
+  assert.equal(findNode(page.result, "tasks")?.count, 6);
+
+  // Closing and reopening the tab starts it on All again.
+  notify("view/closed", { view: "tasklist", instance: dir });
+  const reopened = await request("view/render", { view: "tasklist", instance: dir });
+  assert.equal(findNode(reopened.result, "tasks-filter")?.value, "all");
+  assert.equal(findNode(reopened.result, "tasks")?.count, 6);
+});
+
+test("a status write patches the open views in place and leaves the plan scroll alone", async (t) => {
+  const dir = fixtureRoot();
+  const { child, request, notify, waitFor } = startProgram([{ id: "g", name: "g", root: dir }]);
+  t.after(() => {
+    child.kill();
+    rmSync(dir, { recursive: true, force: true });
+  });
+  await request("initialize", INIT);
+  await request("view/render", { view: "tasklist", instance: dir });
+  notify("view/event", { view: "tasklist", instance: dir, event: { kind: "choose", node: "tasks", items: ["005"] } });
+  await waitFor((m) => m.method === "view/patch");
+  const before = (await request("tool/call", { tool: "tasklist_set_status", arguments: { id: "005", status: "DONE" }, root: dir })).result;
+  assert.equal(before?.content?.[0]?.text, "Task 005 is now DONE.");
+  const message = await waitFor(
+    (m) => m.method === "view/patch" && m.params.patches.some((p) => p.node?.key === "detail-top"),
+  );
+  const keys = message.params.patches.map((p) => p.node?.key ?? `${p.op}:${p.key}`);
+  // Header, the list's count and rows, the top of the plan pane; not the root, not the plan scroll.
+  assert.ok(keys.includes("header"), keys.join(","));
+  assert.ok(keys.includes("tasks-pane-header"), keys.join(","));
+  assert.ok(keys.includes("invalidate:tasks"), keys.join(","));
+  assert.ok(keys.includes("detail-top"), keys.join(","));
+  assert.ok(!keys.includes("root"), keys.join(","));
+  assert.ok(!keys.includes("detail-plan"), keys.join(","));
+  const top = message.params.patches.find((p) => p.node?.key === "detail-top").node;
+  assert.equal(findNode(top, "detail-status")?.value, "DONE");
 });
 
 /** Keys of a node's direct children. */

@@ -82,6 +82,13 @@ var KEYS = {
   tasks: "tasks",
   // the task list (ui.list, rows served by rows())
   detail: "detail",
+  detailTop: "detail-top",
+  // the plan pane without the plan text
+  plan: "detail-plan",
+  // the scroll with the plan Markdown or the quick editor
+  tasksPaneHeader: "tasks-pane-header",
+  tasksEmpty: "tasks-empty",
+  // the sentence that replaces an empty list
   empty: "empty"
 };
 var FILTERS = ["all", "todo", "running", "done", "blocked"];
@@ -92,26 +99,20 @@ var FILTER_LABELS = {
   done: "Done",
   blocked: "Blocked"
 };
-var STATUS_ICONS = {
-  TODO: "note",
-  "IN PROGRESS": "loading",
-  DONE: "check",
-  BLOCKED: "flag",
-  REJECTED: "close"
+var busyKey = {
+  run: (id) => `${ACTIONS.run}:${id}`,
+  runWorktree: (id) => `${ACTIONS.runWorktree}:${id}`,
+  runNext: ACTIONS.runNext
 };
+function isBusy(state, key) {
+  return state.busy?.includes(key) ?? false;
+}
 var STATUS_BADGES = {
   TODO: { text: "todo", tone: "neutral" },
   "IN PROGRESS": { text: "in progress", tone: "info" },
   DONE: { text: "done", tone: "success" },
   BLOCKED: { text: "blocked", tone: "error" },
   REJECTED: { text: "rejected", tone: "neutral" }
-};
-var TONE_COLORS = {
-  neutral: "text_muted",
-  info: "info",
-  success: "success",
-  warning: "warning",
-  error: "error"
 };
 var HARNESS_NAMES = {
   claude: "Claude Code",
@@ -135,6 +136,12 @@ function statusBadge(task, run) {
     if (run.state === "waiting-for-input") return { text: "needs you", tone: "warning" };
   }
   return STATUS_BADGES[task.status];
+}
+function stack(key, children, style = {}) {
+  return ui.flex(key, children, { direction: "column", align: "stretch", style: { gap: "md", ...style } });
+}
+function band(key, children, style = {}) {
+  return ui.flex(key, children, { direction: "row", align: "stretch", style: { gap: "md", ...style } });
 }
 function iconButton(key, action, icon, tooltip, enabled = "yes") {
   return ui.button(key, action, { icon, variant: "ghost", tooltip, enabled });
@@ -176,10 +183,7 @@ function filteredTasks(state) {
 function metaLine(task) {
   return [task.priority, task.effort, task.dependsOn.length > 0 ? `after ${task.dependsOn.join(", ")}` : null].filter(Boolean).join(" \xB7 ");
 }
-function statusIcon(key, task, badge) {
-  return ui.icon(key, STATUS_ICONS[task.status], TONE_COLORS[badge.tone ?? "neutral"]);
-}
-var TITLE_LINE_CHARS = 34;
+var TITLE_LINE_CHARS = 32;
 function titleLines(title, max = TITLE_LINE_CHARS) {
   const words = title.replace(/`/g, "").replace(/\s+/g, " ").trim().split(" ");
   const take = (limit) => {
@@ -205,7 +209,8 @@ function titleLines(title, max = TITLE_LINE_CHARS) {
   return [first, second];
 }
 function taskRow(state, task) {
-  const badge = statusBadge(task, runOf(state, task.id));
+  const run = runOf(state, task.id);
+  const badge = statusBadge(task, run);
   const id = task.id;
   const [line1, line2] = titleLines(task.title);
   const titleStyle = { size: "sm", weight: "medium", color: "text_strong", wrap: "no_wrap" };
@@ -217,11 +222,8 @@ function taskRow(state, task) {
         [
           ui.flex(
             `${id}-lead`,
-            [
-              ui.text(`${id}-number`, id, { size: "sm", weight: "medium", font: "mono", color: "text_subtle", wrap: "no_wrap" }),
-              statusIcon(`${id}-icon`, task, badge)
-            ],
-            { direction: "column", align: "center", style: { gap: "xs", width: { fixed: 36 } } }
+            [ui.text(`${id}-number`, id, { size: "sm", font: "mono", color: "text_muted", wrap: "no_wrap" })],
+            { direction: "column", align: "center", style: { width: { fixed: 36 } } }
           ),
           vstack(`${id}-text`, [
             ui.text(`${id}-title`, line1, titleStyle),
@@ -229,11 +231,15 @@ function taskRow(state, task) {
             ui.text(`${id}-meta`, metaLine(task) || "\xA0", { size: "xs", color: "text_muted", wrap: "no_wrap" })
           ])
         ],
-        { gap: "md" }
+        { gap: "sm" }
       ),
-      ui.badge(`${id}-badge`, badge.text, badge.tone)
+      ui.flex(
+        `${id}-status`,
+        [...isLive(run) ? [ui.spinner(`${id}-spinner`)] : [], ui.badge(`${id}-badge`, badge.text, badge.tone)],
+        { direction: "row", align: "center", justify: "end", style: { gap: "xs", width: { fixed: 104 } } }
+      )
     ],
-    { direction: "row", align: "center", justify: "between", style: { width: "fill", padding: "sm", gap: "md" } }
+    { direction: "row", align: "center", justify: "between", style: { width: "fill", padding: "sm", gap: "sm" } }
   );
   return { node: node2 };
 }
@@ -272,19 +278,20 @@ function header(state, page = null) {
   ];
   if (page !== null) toolButtons.push(iconButton("toolbar-open-tab", ACTIONS.openTab, "open-external", "Open in a tab"));
   const tools = hrow("header-tools", toolButtons, { padding: "xs", gap: "xs", radius: "full", border: "border" });
+  const startingNext = isBusy(state, busyKey.runNext);
   const right = [
     tools,
     ui.button("toolbar-run-next", ACTIONS.runNext, {
-      label: "Run next",
-      icon: "play",
+      label: startingNext ? "Starting\u2026" : "Run next",
+      icon: startingNext ? "loading" : "play",
       variant: "secondary",
-      enabled: runnable,
+      enabled: startingNext ? "no" : runnable,
       tooltip: "Run the next TODO task whose dependencies are done"
     }),
     state.session.active ? ui.button("toolbar-stop", ACTIONS.stop, { label: "Stop", icon: "stop", variant: "danger" }) : ui.button("toolbar-auto-run", ACTIONS.autoRun, {
       label: "Auto-run",
       icon: "flash",
-      variant: "primary",
+      variant: "secondary",
       enabled: runnable,
       tooltip: "Run every TODO task one after another"
     })
@@ -325,30 +332,35 @@ function problemsPanel(problems) {
   }
   return vstack(KEYS.problems, children, { padding: "md", border: "border", radius: "md", width: "fill" });
 }
-function tasksPane(state) {
+var FILTER_EMPTY = {
+  all: "No tasks yet.",
+  todo: "Nothing left to do.",
+  running: "No agent is working on a task.",
+  done: "No task is done yet.",
+  blocked: "No task is blocked."
+};
+function tasksPaneHeader(state) {
   const shown = filteredTasks(state).length;
   const total = state.set.tasks.length;
+  return hrow(KEYS.tasksPaneHeader, [
+    ui.text("tasks-label", "Tasks", { size: "sm", weight: "medium", color: "text_strong", wrap: "no_wrap" }),
+    ui.badge("tasks-count", shown === total ? `${total}` : `${shown} of ${total}`)
+  ]);
+}
+function tasksPane(state) {
+  const shown = filteredTasks(state).length;
   const filter = ui.select(
     "tasks-filter",
     ACTIONS.filter,
     FILTERS.map((value) => ({ value, label: FILTER_LABELS[value] })),
     state.filter
   );
-  return ui.flex(
-    KEYS.tasksPane,
-    [
-      hrow("tasks-pane-header", [
-        ui.text("tasks-label", "Tasks", { size: "sm", weight: "medium", color: "text_strong", wrap: "no_wrap" }),
-        ui.badge("tasks-count", shown === total ? `${total}` : `${shown} of ${total}`)
-      ]),
-      filter,
-      ui.list(KEYS.tasks, shown, "single")
-    ],
-    {
-      direction: "column",
-      style: { ...PANEL, width: { fixed: 420 }, padding: "md", gap: "md" }
-    }
-  );
+  const list = shown > 0 ? ui.list(KEYS.tasks, shown, "single") : ui.text(KEYS.tasksEmpty, FILTER_EMPTY[state.filter], { size: "sm", color: "text_muted", wrap: "wrap" });
+  return stack(KEYS.tasksPane, [tasksPaneHeader(state), filter, list], {
+    ...PANEL,
+    width: { fixed: 440 },
+    padding: "md"
+  });
 }
 function planBody(text) {
   const lines = text.replace(/^\s*#[ \t]+Plan[ \t]+\d+[^\n]*(\r?\n)?/i, "").split("\n");
@@ -364,9 +376,6 @@ function relativePath(root, file) {
   const rel = relative(root, file);
   return rel && !rel.startsWith("..") ? rel.split("\\").join("/") : file;
 }
-function scroll(key, children) {
-  return { key, type: "scroll", direction: "column", style: { height: "fill", padding: "xs", gap: "md" }, children };
-}
 function emptyState(key, text, buttons, style) {
   const children = [
     ui.icon(`${key}-icon`, "tasks", "text_muted"),
@@ -380,19 +389,22 @@ function emptyState(key, text, buttons, style) {
     style: { ...PANEL, padding: "xl", gap: "md", ...style }
   });
 }
-function taskDetail(state) {
-  const task = state.selected === null ? void 0 : state.set.tasks.find((t) => t.id === state.selected);
-  if (task === void 0) {
-    return emptyState(KEYS.detail, "Select a task to read its plan", [], { height: "fill" });
-  }
+function selectedTask(state) {
+  return state.selected === null ? void 0 : state.set.tasks.find((t) => t.id === state.selected);
+}
+function detailTop(state, task) {
   const run = runOf(state, task.id);
   const live = isLive(run);
   const badge = statusBadge(task, run);
-  const chips = [ui.badge("detail-status-badge", badge.text, badge.tone)];
+  const chips = [];
+  if (run !== null && run.endedAt === null && badge.text !== STATUS_BADGES[task.status].text) {
+    chips.push(ui.badge("detail-live", badge.text, badge.tone));
+  }
   if (task.priority) chips.push(ui.badge("detail-priority", `Priority ${task.priority}`));
   if (task.effort) chips.push(ui.badge("detail-effort", `Effort ${task.effort}`));
   if (task.risk) chips.push(ui.badge("detail-risk", `Risk ${task.risk}`));
   if (task.dependsOn.length > 0) chips.push(ui.badge("detail-depends", `after ${task.dependsOn.join(", ")}`));
+  const starting = isBusy(state, busyKey.run(task.id)) || isBusy(state, busyKey.runWorktree(task.id));
   const runControl = live ? [
     ui.spinner("detail-running-spinner"),
     ui.text("detail-running", `Running with ${HARNESS_NAMES[run.harness] ?? run.harness}`, {
@@ -400,7 +412,14 @@ function taskDetail(state) {
       color: "info",
       wrap: "no_wrap"
     })
-  ] : [ui.button("detail-run", ACTIONS.run, { label: "Run", icon: "play", variant: "primary" })];
+  ] : [
+    ui.button("detail-run", ACTIONS.run, {
+      label: starting ? "Starting\u2026" : "Run",
+      icon: starting ? "loading" : "play",
+      variant: "primary",
+      enabled: starting ? "no" : "yes"
+    })
+  ];
   const actions = hrow(
     "detail-actions",
     [
@@ -410,7 +429,7 @@ function taskDetail(state) {
           label: "Run in worktree",
           icon: "git-branch",
           variant: "secondary",
-          enabled: live ? "no" : "yes"
+          enabled: live || starting ? "no" : "yes"
         }),
         ui.button("detail-variants", ACTIONS.variants, { label: "Compare agents", icon: "exchange", variant: "ghost" })
       ]),
@@ -426,45 +445,33 @@ function taskDetail(state) {
     { width: "fill" },
     "between"
   );
-  const statusRow = hrow(
-    "detail-status-row",
-    [
-      ui.flex("detail-status-label-box", [ui.text("detail-status-label", "Status", { size: "xs", color: "text_muted" })], {
-        direction: "row",
-        align: "center",
-        style: { width: { fixed: 64 } }
-      }),
-      ui.select(
-        "detail-status",
-        ACTIONS.setStatus,
-        TASK_STATUSES.map((status) => ({ value: status, label: status })),
-        task.status
-      )
-    ],
-    {}
-  );
-  const children = [
-    vstack(
-      "detail-heading",
-      [
-        ui.text("detail-plan-id", `PLAN ${task.id}`, { size: "xs", weight: "medium", color: "text_muted" }),
-        ui.text("detail-title", task.title, { size: "lg", weight: "bold", color: "text_strong", wrap: "wrap" }),
-        hrow("detail-chips", chips, { gap: "sm" })
-      ],
-      { gap: "sm", width: "fill" }
-    ),
-    actions,
-    statusRow,
-    hrow("detail-file", [
-      ui.icon("detail-file-icon", "file", "text_subtle"),
+  const statusRow = hrow("detail-status-row", [
+    ui.flex("detail-status-label-box", [ui.text("detail-status-label", "Status", { size: "xs", color: "text_muted" })], {
+      direction: "row",
+      align: "center",
+      style: { width: { fixed: 64 } }
+    }),
+    ui.select(
+      "detail-status",
+      ACTIONS.setStatus,
+      TASK_STATUSES.map((status) => ({ value: status, label: status })),
+      task.status
+    )
+  ]);
+  const heading = [
+    hrow("detail-eyebrow", [
+      ui.text("detail-plan-id", `Plan ${task.id}`, { size: "xs", weight: "medium", color: "text_muted", wrap: "no_wrap" }),
       ui.text("detail-file-path", relativePath(state.set.root, task.file), {
         size: "xs",
         font: "mono",
-        color: "text_subtle",
+        color: "text_muted",
         wrap: "no_wrap"
       })
-    ])
+    ]),
+    ui.text("detail-title", task.title, { size: "lg", weight: "bold", color: "text_strong", wrap: "wrap" })
   ];
+  if (chips.length > 0) heading.push(hrow("detail-chips", chips, { gap: "sm" }));
+  const children = [vstack("detail-heading", heading, { gap: "sm", width: "fill" }), actions, statusRow];
   if (run !== null) {
     children.push(
       ui.details("detail-run-info", [
@@ -479,27 +486,36 @@ function taskDetail(state) {
   if (task.statusNote) {
     children.push(ui.text("detail-note", task.statusNote, { size: "sm", color: "warning", wrap: "wrap" }));
   }
-  children.push(ui.divider("detail-divider"));
+  return stack(KEYS.detailTop, children);
+}
+function planPane(state) {
+  let children;
   if (state.editing) {
-    children.push(
-      scroll("detail-plan", [
-        ui.form(
-          "plan-form",
-          ACTIONS.saveEdit,
-          [{ key: "text", label: "Plan (Markdown)", type: "text", kind: "multiline", value: state.planText ?? "" }],
-          "Save"
-        ),
-        ui.button("detail-cancel-edit", ACTIONS.cancelEdit, { label: "Cancel", icon: "cancel", variant: "ghost" })
-      ])
-    );
+    children = [
+      ui.form(
+        "plan-form",
+        ACTIONS.saveEdit,
+        [{ key: "text", label: "Plan (Markdown)", type: "text", kind: "multiline", value: state.planText ?? "" }],
+        "Save"
+      ),
+      ui.button("detail-cancel-edit", ACTIONS.cancelEdit, { label: "Cancel", icon: "cancel", variant: "ghost" })
+    ];
   } else if (state.planText === null) {
-    children.push(ui.text("detail-unreadable", "Cannot read the plan file.", { size: "sm", color: "text_muted" }));
+    children = [ui.text("detail-unreadable", "Cannot read the plan file.", { size: "sm", color: "text_muted" })];
   } else {
-    children.push(scroll("detail-plan", [ui.markdown("plan-md", planBody(state.planText))]));
+    children = [ui.markdown("plan-md", planBody(state.planText))];
   }
-  return ui.flex(KEYS.detail, children, {
-    direction: "column",
-    style: { ...PANEL, height: "fill", padding: "lg", gap: "md" }
+  return { key: KEYS.plan, type: "scroll", direction: "column", style: { height: "fill", padding: "xs", gap: "md" }, children };
+}
+function taskDetail(state) {
+  const task = selectedTask(state);
+  if (task === void 0) {
+    return emptyState(KEYS.detail, "Select a task to read its plan", [], { height: "fill" });
+  }
+  return stack(KEYS.detail, [detailTop(state, task), ui.divider("detail-divider"), planPane(state)], {
+    ...PANEL,
+    height: "fill",
+    padding: "lg"
   });
 }
 function tasklistView(state, page = null) {
@@ -523,34 +539,40 @@ function tasklistView(state, page = null) {
       )
     );
   } else {
-    children.push(
-      ui.flex(KEYS.body, [tasksPane(state), taskDetail(state)], {
-        direction: "row",
-        style: { width: "fill", height: "fill", gap: "lg" }
-      })
-    );
+    children.push(band(KEYS.body, [tasksPane(state), taskDetail(state)], { width: "fill", height: "fill", gap: "lg" }));
   }
-  return ui.flex(KEYS.root, children, {
-    direction: "column",
-    style: { width: "fill", height: "fill", padding: "lg", gap: "lg" }
-  });
+  return stack(KEYS.root, children, { width: "fill", height: "fill", padding: "lg", gap: "lg" });
 }
 function noGroupView() {
-  return ui.flex(
+  return stack(
     KEYS.root,
     [emptyState(KEYS.empty, "Open a group to see its tasks.", [], { width: "fill", height: "fill" })],
-    { direction: "column", style: { width: "fill", height: "fill", padding: "lg", gap: "lg" } }
+    { width: "fill", height: "fill", padding: "lg", gap: "lg" }
   );
+}
+function viewShape(state) {
+  const task = selectedTask(state);
+  return [
+    state.set.dir !== null,
+    state.session.active,
+    state.set.problems.length > 0,
+    filteredTasks(state).length > 0,
+    task?.id ?? "",
+    state.editing
+  ].join("|");
 }
 export {
   ACTIONS,
   FILTERS,
   KEYS,
   TITLE_LINE_CHARS,
+  busyKey,
+  detailTop,
   filteredTasks,
   header,
   noGroupView,
   planBody,
+  planPane,
   problemsPanel,
   sessionStrip,
   statusBadge,
@@ -559,5 +581,7 @@ export {
   taskRows,
   tasklistView,
   tasksPane,
-  titleLines
+  tasksPaneHeader,
+  titleLines,
+  viewShape
 };
