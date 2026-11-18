@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
 import type { FSWatcher } from "node:fs";
-import { readFileSync, watch } from "node:fs";
+import { watch } from "node:fs";
 import { basename, dirname, relative, resolve, sep } from "node:path";
 import { promisify } from "node:util";
 import type {
@@ -16,6 +16,7 @@ import type {
   ViewRef,
 } from "@krad-ade/extension";
 import { createExtension, patch } from "@krad-ade/extension";
+import { PlanCache } from "./cache.js";
 import { createTask, findPlansDir, loadPlanSet, runnableTasks, writeStatus } from "./plans.js";
 import type { AgentInfo, ExecutionStyle, KradCli } from "./runner.js";
 import {
@@ -32,7 +33,7 @@ import {
 import { hasStopped, isLive, nextLaunches, sessionOver, verdictFor } from "./scheduler.js";
 import type { Harness, PlanSet, RunMode, RunRecord, Task, TaskStatus } from "./types.js";
 import { HARNESSES, TASK_STATUSES } from "./types.js";
-import type { Filter, PageChrome, SessionInfo, TabState } from "./view.js";
+import type { Filter, Layout, PageChrome, SessionInfo, TabState } from "./view.js";
 import {
   ACTIONS,
   busyKey,
@@ -43,7 +44,10 @@ import {
   KEYS,
   noGroupView,
   planPane,
+  planScroll,
+  planSignature,
   problemsPanel,
+  sectionTitle,
   sessionStrip,
   taskDetail,
   taskRows,
@@ -104,10 +108,14 @@ function options(values: SettingsValues): Options {
 interface ViewUi {
   selected: string | null;
   filter: Filter;
+  /** Side by side (default) or stacked panes, remembered per view while the program runs. */
+  layout: Layout;
+  /** Title of the plan section shown; null = the first. Reset when another task is chosen. */
+  section: string | null;
 }
 
 function newUi(): ViewUi {
-  return { selected: null, filter: "all" };
+  return { selected: null, filter: "all", layout: "side", section: null };
 }
 
 interface Session {
@@ -175,12 +183,13 @@ function sessionInfo(root: string): SessionInfo {
   };
 }
 
-function readText(path: string): string | null {
-  try {
-    return readFileSync(path, "utf8");
-  } catch {
-    return null;
-  }
+/** Plan sets and plan texts in memory, read again only when the files change (see PlanCache). */
+const plans = new PlanCache();
+
+/** Writes a status to the index and forgets the cached plan set of that root. */
+function writeStatusOf(root: string, id: string, status: TaskStatus, note: string | null): void {
+  writeStatus(loadPlanSet(root), id, status, note);
+  plans.invalidate(root);
 }
 
 // ---------------------------------------------------------------------------
@@ -199,8 +208,10 @@ interface OpenView {
   groups: { root: string; name: string }[];
   /** viewShape() of the last UI sent; null = not rendered yet. */
   shape: string | null;
-  /** The plan text last sent, to leave the plan scroll alone when it did not change. */
-  planText: string | null;
+  /** planSignature() of the plan last sent, to leave the plan alone when what it shows did not change. */
+  planSig: string;
+  /** The state last sent: rows() builds its rows from it, without touching the disk. */
+  state: TabState | null;
 }
 
 /** Rendered views, by view id + instance. */
@@ -229,19 +240,21 @@ function uiOf(view: string, root: string): ViewUi {
   return ui;
 }
 
-/** The state a view renders. `withPlan` = false skips reading the selected plan file (list rows). */
-function viewState(view: string, root: string, withPlan = true): TabState {
-  const set = loadPlanSet(root);
+/** The state a view renders, from the plan cache. */
+function viewState(view: string, root: string): TabState {
+  const set = plans.planSet(root);
   const ui = uiOf(view, root);
   const task = ui.selected === null ? undefined : set.tasks.find((t) => t.id === ui.selected);
   return {
     set,
     runs: runsOf(root),
     selected: ui.selected,
-    planText: withPlan && task ? readText(task.file) : null,
+    planText: task ? plans.planText(task.file) : null,
     session: sessionInfo(root),
     filter: ui.filter,
     busy: [...(busy.get(normPath(root)) ?? [])],
+    layout: ui.layout,
+    section: ui.section,
   };
 }
 
@@ -258,7 +271,7 @@ async function openViewOf(ref: ViewRef, context: Context, reresolve: boolean): P
   const id = refId(ref);
   let open = openViews.get(id);
   if (!open) {
-    open = { ref: { view: ref.view, instance: ref.instance }, root: null, groups: [], shape: null, planText: null };
+    open = { ref: { view: ref.view, instance: ref.instance }, root: null, groups: [], shape: null, planSig: "", state: null };
     openViews.set(id, open);
     reresolve = true;
     if (ref.view === PAGE) Object.assign(open, await resolvePage(context));
@@ -281,7 +294,8 @@ function chromeOf(open: OpenView): PageChrome | null {
 /** Remembers what a view now shows, for the next refresh. */
 function remember(open: OpenView, state: TabState | null): void {
   open.shape = state === null ? null : viewShape(state);
-  open.planText = state?.planText ?? null;
+  open.planSig = state === null ? "" : planSignature(state);
+  open.state = state;
 }
 
 function build(open: OpenView): Node {
@@ -328,9 +342,10 @@ function refreshOpen(open: OpenView, context: Context): void {
   const task = state.selected === null ? undefined : state.set.tasks.find((t) => t.id === state.selected);
   if (task !== undefined) {
     patches.push(patch.replace(detailTop(state, task)));
-    if (state.planText !== open.planText) patches.push(patch.replace(planPane(state)));
+    // The Markdown is the heaviest node: re-send it only when what the pane shows changed.
+    if (planSignature(state) !== open.planSig) patches.push(patch.replace(planPane(state)));
   }
-  open.planText = state.planText;
+  remember(open, state);
   patchOpen(open, context, patches);
 }
 
@@ -369,8 +384,8 @@ function refreshDetail(open: OpenView, context: Context): void {
 /** A filter switch: replaces the tasks pane (its count, its list or its empty sentence). */
 function refreshList(open: OpenView, context: Context): void {
   if (open.root === null) return;
-  const state = viewState(open.ref.view, open.root, false);
-  if (open.shape !== null) open.shape = viewShape({ ...state, planText: open.planText });
+  const state = viewState(open.ref.view, open.root);
+  remember(open, state);
   patchOpen(open, context, [patch.replace(tasksPane(state)), patch.invalidate(KEYS.tasks)]);
 }
 
@@ -409,7 +424,7 @@ async function openTab(root: string, context: Context): Promise<void> {
 }
 
 function findTask(root: string, id: string): { set: PlanSet; task: Task } | null {
-  const set = loadPlanSet(root);
+  const set = plans.planSet(root);
   const task = set.tasks.find((t) => t.id === id);
   return task ? { set, task } : null;
 }
@@ -500,7 +515,7 @@ async function runTask(root: string, task: Task, mode: RunMode, context: Context
       branch = created.branch;
     }
     const planPath = planPathOf(root, task.file);
-    writeStatus(loadPlanSet(root), task.id, "IN PROGRESS", null);
+    writeStatusOf(root, task.id, "IN PROGRESS", null);
     statusWritten = true;
     const harness = current.harness;
     const terminal = await app.openTerminal({
@@ -530,7 +545,7 @@ async function runTask(root: string, task: Task, mode: RunMode, context: Context
     app.toast(`Task ${task.id} did not start: ${failure(error)}`, "error");
     if (statusWritten) {
       try {
-        writeStatus(loadPlanSet(root), task.id, previous.status, previous.note);
+        writeStatusOf(root, task.id, previous.status, previous.note);
       } catch (restoreError) {
         app.log("warn", `could not restore the status of ${task.id}: ${failure(restoreError)}`);
       }
@@ -662,7 +677,7 @@ function finishRun(record: RunRecord, context: Context): void {
   if (record.mode === "worktree" && verdict !== "needs-review") {
     const mirrored = status === "DONE" ? [note, `in worktree ${record.branch ?? record.worktree}`].filter(Boolean).join(" — ") : note;
     try {
-      writeStatus(loadPlanSet(root), record.taskId, status, mirrored || null);
+      writeStatusOf(root, record.taskId, status, mirrored || null);
     } catch (error) {
       app.log("warn", `could not mirror the status of ${record.taskId}: ${failure(error)}`);
     }
@@ -692,7 +707,7 @@ async function startAutoRun(root: string, context: Context): Promise<void> {
     app.toast("An auto-run is already going in this group", "info");
     return;
   }
-  const set = loadPlanSet(root);
+  const set = plans.planSet(root);
   if (runnableTasks(set.tasks).length === 0) {
     app.toast("Nothing to run: every TODO task waits on another one", "info");
     return;
@@ -764,7 +779,7 @@ async function advanceOnce(root: string, session: Session, context: Context): Pr
   }
   const maxParallel = sessionParallel.get(session) ?? current.maxParallel;
   const mode: RunMode = maxParallel === 1 ? "here" : "worktree";
-  const launches = nextLaunches(runnableTasks(loadPlanSet(root).tasks), runsOf(root), session.finished, maxParallel);
+  const launches = nextLaunches(runnableTasks(plans.planSet(root).tasks), runsOf(root), session.finished, maxParallel);
   for (const task of launches) {
     if (sessionOf(root) !== session) return;
     const started = await runTask(root, task, mode, context);
@@ -780,7 +795,7 @@ async function advanceOnce(root: string, session: Session, context: Context): Pr
     endSession(root, context, `Auto-run stopped: task ${first.id} ${first.why}`, "warning");
     return;
   }
-  if (sessionOver(runnableTasks(loadPlanSet(root).tasks), runsOf(root), session.finished, maxParallel)) {
+  if (sessionOver(runnableTasks(plans.planSet(root).tasks), runsOf(root), session.finished, maxParallel)) {
     endSession(root, context, `Auto-run finished: ${session.done}/${session.total} tasks done`, "success");
     return;
   }
@@ -804,7 +819,7 @@ async function stopAutoRun(root: string, context: Context): Promise<void> {
 }
 
 async function runNext(root: string, context: Context): Promise<void> {
-  const task = runnableTasks(loadPlanSet(root).tasks).find((t) => !liveRun(root, t.id));
+  const task = runnableTasks(plans.planSet(root).tasks).find((t) => !liveRun(root, t.id));
   if (!task) {
     context.app.toast("Nothing to run: every TODO task waits on another one", "info");
     return;
@@ -852,6 +867,7 @@ async function onViewEvent(event: ViewEvent, ref: ViewRef, context: Context): Pr
   try {
     if (event.kind === "choose" && event.node === KEYS.tasks) {
       ui.selected = event.items[0] ?? null;
+      ui.section = null;
       refreshDetail(open, context);
       return;
     }
@@ -873,6 +889,13 @@ async function onViewEvent(event: ViewEvent, ref: ViewRef, context: Context): Pr
           return await startAutoRun(root, context);
         case ACTIONS.stop:
           return await stopAutoRun(root, context);
+        case ACTIONS.group:
+          return await switchGroup(open, context);
+        case ACTIONS.setStatus:
+          return await changeStatus(root, ui, context);
+        case ACTIONS.layout:
+          ui.layout = ui.layout === "stack" ? "side" : "stack";
+          return replaceOpen(open, context);
         case ACTIONS.run:
         case ACTIONS.runWorktree:
         case ACTIONS.variants:
@@ -883,35 +906,70 @@ async function onViewEvent(event: ViewEvent, ref: ViewRef, context: Context): Pr
       }
       return;
     }
-    if (event.kind === "select" && event.action === ACTIONS.group) {
-      if (open.ref.view !== PAGE) return;
-      pageChoice = event.value;
-      await openViewOf(open.ref, context, true);
-      uiOf(open.ref.view, open.root ?? "").filter = "all";
-      return replaceOpen(open, context);
+    if (event.kind === "select" && event.action === ACTIONS.section) {
+      // Only the scroll changes: the select already shows the chip that was clicked.
+      const state = viewState(open.ref.view, root);
+      const title = sectionTitle(state.planText, event.value);
+      if (title === null) return;
+      ui.section = title;
+      const next = { ...state, section: title };
+      remember(open, next);
+      patchOpen(open, context, [patch.replace(planScroll(next))]);
+      return;
     }
     if (event.kind === "select" && event.action === ACTIONS.filter) {
       if (FILTERS.includes(event.value as Filter)) ui.filter = event.value as Filter;
       return refreshList(open, context);
     }
-    if (event.kind === "select" && event.action === ACTIONS.setStatus) {
-      if (ui.selected === null) return;
-      const status = event.value as TaskStatus;
-      if (!TASK_STATUSES.includes(status)) return;
-      let note: string | null = null;
-      if (status === "BLOCKED" || status === "REJECTED") {
-        note = await app.input({ title: "Reason (one line)" });
-        if (note === null) return refreshRoot(root, context);
-        note = note.trim() || null;
-      }
-      writeStatus(loadPlanSet(root), ui.selected, status, note);
-      refreshAll(context);
-      return;
-    }
   } catch (error) {
     app.toast(failure(error), "error");
     refreshRoot(root, context);
   }
+}
+
+/** The Tasks page's group button: the app's picker chooses the group the page shows. */
+async function switchGroup(open: OpenView, context: Context): Promise<void> {
+  if (open.ref.view !== PAGE || open.groups.length < 2) return;
+  const picked = await context.app.pick({
+    title: "Show the tasks of which group?",
+    items: open.groups.map((g) => ({ value: g.root, label: g.name, detail: g.root })),
+    mode: "one",
+  });
+  const root = picked?.[0];
+  if (!root) return;
+  pageChoice = root;
+  await openViewOf(open.ref, context, true);
+  if (open.root !== null) uiOf(open.ref.view, open.root).filter = "all";
+  replaceOpen(open, context);
+}
+
+/** "Change status": the app's picker chooses the status; BLOCKED and REJECTED ask for a reason. */
+async function changeStatus(root: string, ui: ViewUi, context: Context): Promise<void> {
+  if (ui.selected === null) return;
+  const found = findTask(root, ui.selected);
+  if (!found) return;
+  const { task } = found;
+  const picked = await context.app.pick({
+    title: `Status of plan ${task.id}`,
+    items: TASK_STATUSES.map((status) => ({
+      value: status,
+      label: status,
+      detail: status === task.status ? "current" : null,
+    })),
+    mode: "one",
+  });
+  const status = picked?.[0] as TaskStatus | undefined;
+  if (status === undefined || !TASK_STATUSES.includes(status)) return;
+  let note: string | null = null;
+  if (status === "BLOCKED" || status === "REJECTED") {
+    note = await context.app.input({ title: "Reason (one line)" });
+    if (note === null) return;
+    note = note.trim() || null;
+  } else if (status === task.status) {
+    return;
+  }
+  writeStatusOf(root, task.id, status, note);
+  refreshAll(context);
 }
 
 /**
@@ -965,6 +1023,7 @@ function watchPlans(root: string, context: Context): void {
         if (entry.debounce) clearTimeout(entry.debounce);
         entry.debounce = setTimeout(() => {
           entry.debounce = null;
+          plans.invalidate(root);
           refreshRoot(root, context);
         }, 300);
       }),
@@ -995,6 +1054,7 @@ async function newTask(root: string, context: Context, open: OpenView | null = n
   });
   if (title === null || !title.trim()) return;
   const file = createTask(root, title);
+  plans.invalidate(root);
   if (open !== null) {
     const ui = uiOf(open.ref.view, root);
     ui.selected = basename(file).slice(0, 3);
@@ -1057,6 +1117,7 @@ async function setStatusTool(args: unknown, root: string | null, context: Contex
   if (!set.tasks.some((t) => t.id === id)) return failed(`No task ${id} in ${set.dir}.`);
   const line = typeof note === "string" ? note.replace(/[\r\n]+/g, " ").trim() || null : null;
   writeStatus(set, id, status as TaskStatus, line);
+  plans.invalidate(where);
   refreshAll(context);
   return `Task ${id} is now ${status}.`;
 }
@@ -1071,7 +1132,9 @@ async function listRows(params: RowsParams, context: Context): Promise<RowsResul
   if (params.node !== KEYS.tasks) return NO_ROWS;
   const open = await openViewOf(params, context, false);
   if (open.root === null) return NO_ROWS;
-  return { kind: "list", rows: taskRows(viewState(open.ref.view, open.root, false), params.start, params.end) };
+  // The rows come from the state last sent: the list asks for rows on every scroll, so no disk here.
+  open.state ??= viewState(open.ref.view, open.root);
+  return { kind: "list", rows: taskRows(open.state, params.start, params.end) };
 }
 
 function closeView(ref: ViewRef): void {
@@ -1137,6 +1200,7 @@ createExtension({
 
   onWorkspaceEvent(event, context) {
     if (event.kind !== "file_saved") return;
+    plans.invalidate();
     // A new plans/ folder may change the group the page shows: re-resolve it.
     const inPlans = /[\\/]plans[\\/]/i.test(event.path);
     for (const open of openViews.values()) {

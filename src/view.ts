@@ -2,7 +2,6 @@ import { basename, relative } from "node:path";
 import type { Badge, Choice, Icon, ListRow, Node, Style } from "@krad-ade/extension";
 import { ui } from "@krad-ade/extension";
 import type { Harness, PlanSet, RunRecord, Task, TaskStatus } from "./types.js";
-import { TASK_STATUSES } from "./types.js";
 
 /** Action ids sent by the views. A contract with the event handlers in main.ts: rename only together. */
 export const ACTIONS = {
@@ -11,8 +10,10 @@ export const ACTIONS = {
   variants: "variants",        // compare agents on this task with Krad variants
   edit: "edit",                // open the plan file in Krad's editor
   quickEdit: "quick-edit",     // edit the plan with a prompt: an agent changes the Markdown
-  setStatus: "set-status",     // select change on the detail pane
+  setStatus: "set-status",     // "Change status" button: the app's picker chooses the status
   filter: "filter",            // select change of the task list filter
+  section: "section",          // select change of the plan section shown
+  layout: "layout",            // header button: side by side <-> stacked panes
   newTask: "new-task",
   refresh: "refresh",
   runNext: "run-next",
@@ -21,7 +22,7 @@ export const ACTIONS = {
   generate: "generate",        // write plans with /improve
   reconcile: "reconcile",      // /improve reconcile
   openTab: "open-tab",         // Tasks page: open the Tasklist tab of its group
-  group: "group",              // Tasks page: select change to switch group
+  group: "group",              // Tasks page: group button, the app's picker chooses the group
 } as const;
 
 /** Keys of the views' main nodes. */
@@ -35,7 +36,9 @@ export const KEYS = {
   tasks: "tasks",              // the task list (ui.list, rows served by rows())
   detail: "detail",
   detailTop: "detail-top",     // the plan pane without the plan text
-  plan: "detail-plan",         // the scroll with the plan Markdown or the quick editor
+  plan: "detail-plan",         // the plan: the section select and the scroll with one section
+  planSections: "plan-sections", // the section select
+  planScroll: "plan-scroll",   // the scroll with the selected section's Markdown
   tasksPaneHeader: "tasks-pane-header",
   tasksEmpty: "tasks-empty",   // the sentence that replaces an empty list
   empty: "empty",
@@ -68,7 +71,12 @@ export interface TabState {
   session: SessionInfo;
   filter: Filter;             // task list filter of the view
   busy?: readonly string[];   // actions still starting: "run:<id>", "run-worktree:<id>", "run-next"
+  layout?: Layout;            // side by side (default) or stacked panes
+  section?: string | null;    // title of the plan section shown, WHOLE_PLAN, or null for the first
 }
+
+/** Side by side: tasks pane left, plan right. Stacked: tasks pane on top, plan under it. */
+export type Layout = "side" | "stack";
 
 /** Busy keys of the actions that start an agent, while they start. */
 export const busyKey = {
@@ -129,7 +137,8 @@ export function statusBadge(task: Task, run: RunRecord | null): Badge {
 // - width "fill" is 100% of the parent, not a flex grow: never put it on a child of a row that has siblings.
 // - height "fill" is 100% height plus flex-grow along the PARENT's main axis: in a row it takes the remaining width.
 // - a select renders as a wrapping row of chips: give it its own line.
-// - a list row body is the only child of the app's flex_1 row wrapper: width "fill" is safe there.
+// - views get no width and no resize event: a narrow window is handled by rows that wrap
+//   (`flow`), pickers instead of wide segmented selects, and a stacked layout the user can choose.
 
 /** A column whose children take its full width. */
 function stack(key: string, children: Node[], style: Style = {}): Node {
@@ -149,6 +158,11 @@ type Justify = "start" | "between" | "center";
 
 function hrow(key: string, children: Node[], style: Style = {}, justify: Justify = "start"): Node {
   return ui.flex(key, children, { direction: "row", align: "center", justify, style: { gap: "sm", ...style } });
+}
+
+/** A row that wraps its children onto more lines when the window is narrow. */
+function flow(key: string, children: Node[], style: Style = {}, justify: Justify = "start"): Node {
+  return ui.flex(key, children, { direction: "row", align: "center", justify, wrap: "wrap", style: { gap: "sm", ...style } });
 }
 
 /** A column whose items start at the left (the renderer's default centres them). */
@@ -200,27 +214,34 @@ function metaLine(task: Task): string {
 // content-sized row and does nothing. So every row body gets the same FIXED width, derived from the
 // fixed pane width, and so do its three columns: every row (and its hover and selection highlight)
 // is exactly as wide as the others. Widths include padding (gpui sizes boxes border-box).
-/** Width of the tasks pane. */
-export const PANE_W = 440;
+/** Width of the tasks pane side by side with the plan. Stacked, the pane takes the full width and
+ * the rows keep this geometry (they are fixed-width, left-aligned). */
+export const PANE_W = 380;
+/** Height of the tasks pane in the stacked layout. */
+export const STACK_TASKS_H = 280;
 /** Padding of the tasks pane: the "md" space token. */
 export const PANE_PAD = 12;
 /** Horizontal padding the app puts on each side of a list row. */
 export const APP_ROW_PAD_X = 8;
 /** Width of a row body: the pane's inner width minus the app's row padding (the list has none). */
-export const ROW_BODY_W = PANE_W - 2 * PANE_PAD - 2 * APP_ROW_PAD_X; // 400
+export const ROW_BODY_W = PANE_W - 2 * PANE_PAD - 2 * APP_ROW_PAD_X; // 340
 /** Padding of a row body: the "sm" space token, on each side. */
 export const ROW_PAD = 8;
 /** Gap between the row's columns: the "sm" space token. */
 export const ROW_GAP = 8;
 /** The id column. */
 export const ROW_LEAD_W = 36;
-/** The status column: the widest pill ("in progress") with a spinner before it. */
-export const ROW_STATUS_W = 104;
+/**
+ * The status area after the text column: one pill (the widest, "in progress", is ~76px) or a
+ * spinner while an agent works. Not a node of its own: the mark sits right after the fixed text
+ * column, so every mark starts on the same edge.
+ */
+export const ROW_STATUS_W = 88;
 /** The text column: what the other columns, the gaps and the padding leave. */
-export const ROW_TEXT_W = ROW_BODY_W - 2 * ROW_PAD - ROW_LEAD_W - ROW_STATUS_W - 2 * ROW_GAP; // 228
+export const ROW_TEXT_W = ROW_BODY_W - 2 * ROW_PAD - ROW_LEAD_W - ROW_STATUS_W - 2 * ROW_GAP; // 184
 
-/** Characters of a list title line at text size sm (~6.8px each) in the 228px text column. */
-export const TITLE_LINE_CHARS = 32;
+/** Characters of a list title line at text size sm (~6.8px each) in the 184px text column. */
+export const TITLE_LINE_CHARS = 26;
 
 /**
  * A task title for the list: Markdown code ticks dropped, split at word boundaries into exactly
@@ -254,11 +275,12 @@ export function titleLines(title: string, max = TITLE_LINE_CHARS): [string, stri
 }
 
 /**
- * One row of the task list: key = task id. A fixed-width leading column with the id, two title
- * lines and a meta line, then a fixed-width trailing column with the one status mark (a pill),
- * preceded by a spinner while an agent works on the task. The body and its three columns have fixed
- * widths (ROW_BODY_W = ROW_LEAD_W + ROW_TEXT_W + ROW_STATUS_W + gaps + padding), so every row has
- * the same width and the titles never move when a status or the spinner changes.
+ * One row of the task list: key = task id. A fixed-width leading column with the id, a fixed-width
+ * text column (two title lines and a meta line), then the one status mark: a pill, or a spinner
+ * while an agent works on the task (the header's "N running" chip and the plan pane say it in
+ * words). The body and its columns have fixed widths (ROW_BODY_W = ROW_LEAD_W + ROW_TEXT_W +
+ * ROW_STATUS_W + gaps + padding), so every row has the same width and every mark starts on the
+ * same edge. 8 nodes in every row: the list renders every visible row, so each node saved counts.
  */
 export function taskRow(state: TabState, task: Task): ListRow {
   const run = runOf(state, task.id);
@@ -266,35 +288,32 @@ export function taskRow(state: TabState, task: Task): ListRow {
   const id = task.id;
   const [line1, line2] = titleLines(task.title);
   const titleStyle = { size: "sm", weight: "medium", color: "text_strong", wrap: "no_wrap" } as const;
-  const node = ui.flex(
-    id,
-    [
-      ui.flex(
-        `${id}-lead`,
-        [ui.text(`${id}-number`, id, { size: "sm", font: "mono", color: "text_muted", wrap: "no_wrap" })],
-        { direction: "column", align: "center", style: { width: { fixed: ROW_LEAD_W } } },
-      ),
-      vstack(
-        `${id}-text`,
-        [
-          ui.text(`${id}-title`, line1, titleStyle),
-          ui.text(`${id}-title-2`, line2 || " ", titleStyle),
-          ui.text(`${id}-meta`, metaLine(task) || " ", { size: "xs", color: "text_muted", wrap: "no_wrap" }),
-        ],
-        { width: { fixed: ROW_TEXT_W } },
-      ),
-      ui.flex(
-        `${id}-status`,
-        [...(isLive(run) ? [ui.spinner(`${id}-spinner`)] : []), ui.badge(`${id}-badge`, badge.text, badge.tone)],
-        { direction: "row", align: "center", justify: "end", style: { gap: "xs", width: { fixed: ROW_STATUS_W } } },
-      ),
-    ],
-    { direction: "row", align: "center", style: { width: { fixed: ROW_BODY_W }, padding: "sm", gap: "sm" } },
-  );
+  const children: Node[] = [
+    ui.flex(
+      `${id}-lead`,
+      [ui.text(`${id}-number`, id, { size: "sm", font: "mono", color: "text_muted", wrap: "no_wrap" })],
+      { direction: "column", align: "center", style: { width: { fixed: ROW_LEAD_W } } },
+    ),
+    vstack(
+      `${id}-text`,
+      [
+        ui.text(`${id}-title`, line1, titleStyle),
+        ui.text(`${id}-title-2`, line2 || "\u00a0", titleStyle),
+        ui.text(`${id}-meta`, metaLine(task) || "\u00a0", { size: "xs", color: "text_muted", wrap: "no_wrap" }),
+      ],
+      { width: { fixed: ROW_TEXT_W } },
+    ),
+    isLive(run) ? ui.spinner(`${id}-spinner`) : ui.badge(`${id}-badge`, badge.text, badge.tone),
+  ];
+  const node = ui.flex(id, children, {
+    direction: "row",
+    align: "center",
+    style: { width: { fixed: ROW_BODY_W }, padding: "sm", gap: "sm" },
+  });
   return { node };
 }
 
-/** Rows start..end (end exclusive) of the task list. */
+/** Rows start..end (end exclusive) of the task list: only those, from the state in memory. */
 export function taskRows(state: TabState, start = 0, end = Number.MAX_SAFE_INTEGER): ListRow[] {
   return filteredTasks(state)
     .slice(start, end)
@@ -307,7 +326,7 @@ export function taskRows(state: TabState, start = 0, end = Number.MAX_SAFE_INTEG
 
 /**
  * What the Tasks page adds to the tab's UI: an "Open in a tab" button and, with several groups,
- * a select to switch group. `null` = the Tasklist tab.
+ * a button that opens the app's picker to switch group. `null` = the Tasklist tab.
  */
 export interface PageChrome {
   groups: Choice[]; // value = group root, label = group name
@@ -315,7 +334,8 @@ export interface PageChrome {
 
 /**
  * The header: title, scope and progress on the left; tools and the run actions on the right.
- * No filled button here: the one accent of the screen is the selected task's Run.
+ * The row and its right group wrap, so a narrow window puts them on more lines instead of
+ * squeezing them. No filled button here: the one accent of the screen is the selected task's Run.
  */
 export function header(state: TabState, page: PageChrome | null = null): Node {
   const runnable = hasTodo(state) ? "yes" : "no";
@@ -325,7 +345,14 @@ export function header(state: TabState, page: PageChrome | null = null): Node {
   ];
   const group = page?.groups.find((g) => g.value === state.set.root);
   if (page !== null && page.groups.length > 1 && group !== undefined) {
-    left.push(ui.select("header-group", ACTIONS.group, page.groups, group.value));
+    left.push(
+      ui.button("header-group", ACTIONS.group, {
+        label: group.label,
+        icon: "chevron-down",
+        variant: "ghost",
+        tooltip: "Switch group",
+      }),
+    );
   } else {
     left.push(
       ui.text("header-folder", basename(state.set.root) || state.set.root, {
@@ -341,11 +368,18 @@ export function header(state: TabState, page: PageChrome | null = null): Node {
     if (running > 0) left.push(ui.badge("header-running", `${running} running`, "info"));
     if (blocked > 0) left.push(ui.badge("header-blocked", `${blocked} blocked`, "error"));
   }
+  const stacked = state.layout === "stack";
   const toolButtons = [
     iconButton("toolbar-new", ACTIONS.newTask, "add", "New task"),
     iconButton("toolbar-generate", ACTIONS.generate, "magic", "Write plans with /improve"),
     iconButton("toolbar-reconcile", ACTIONS.reconcile, "repeat", "Reconcile plans with /improve"),
     iconButton("toolbar-refresh", ACTIONS.refresh, "refresh", "Refresh"),
+    iconButton(
+      "toolbar-layout",
+      ACTIONS.layout,
+      stacked ? "exchange" : "list-view",
+      stacked ? "Side by side" : "Stack the panes",
+    ),
   ];
   if (page !== null) toolButtons.push(iconButton("toolbar-open-tab", ACTIONS.openTab, "open-external", "Open in a tab"));
   const tools = hrow("header-tools", toolButtons, { padding: "xs", gap: "xs", radius: "full", border: "border" });
@@ -369,9 +403,9 @@ export function header(state: TabState, page: PageChrome | null = null): Node {
           tooltip: "Run every TODO task one after another",
         }),
   ];
-  return hrow(
+  return flow(
     KEYS.header,
-    [hrow("header-left", left), hrow("header-right", right, { gap: "md" })],
+    [flow("header-left", left), flow("header-right", right)],
     { width: "fill", gap: "md" },
     "between",
   );
@@ -388,7 +422,7 @@ export function sessionStrip(state: TabState): Node {
   if (session.message) {
     children.push(ui.text("session-message", session.message, { size: "sm", color: "text_muted", wrap: "wrap" }));
   }
-  return hrow(KEYS.session, children, {
+  return flow(KEYS.session, children, {
     width: "fill",
     background: "panel",
     border: "border",
@@ -442,14 +476,13 @@ export function tasksPane(state: TabState): Node {
     shown > 0
       ? ui.list(KEYS.tasks, shown, "single")
       : ui.text(KEYS.tasksEmpty, FILTER_EMPTY[state.filter], { size: "sm", color: "text_muted", wrap: "wrap" });
-  // Fixed width, no height "fill" (that would make it grow sideways in the body row): the body
-  // row's align stretch gives it the full height; its own align stretch gives the filter and the
-  // list the full width, so every row highlight spans the pane.
-  return stack(KEYS.tasksPane, [tasksPaneHeader(state), filter, list], {
-    ...PANEL,
-    width: { fixed: PANE_W },
-    padding: "md", // PANE_PAD
-  });
+  // Side by side: fixed width, no height "fill" (that would make it grow sideways in the body
+  // row); the body row's align stretch gives it the full height. Stacked: the full width (its rows
+  // are fixed-width anyway) and a fixed height, so the plan gets the rest. Its own align stretch
+  // gives the filter and the list the pane's width.
+  const size: Style =
+    state.layout === "stack" ? { width: "fill", height: { fixed: STACK_TASKS_H } } : { width: { fixed: PANE_W } };
+  return stack(KEYS.tasksPane, [tasksPaneHeader(state), filter, list], { ...PANEL, ...size, padding: "md" });
 }
 
 /**
@@ -467,6 +500,65 @@ export function planBody(text: string): string {
   return lines.join("\n").replace(/^(\s*\r?\n)+/, "");
 }
 
+/** One part of a plan: the text before its first "## " heading ("Overview"), or one "## " section. */
+export interface PlanSection {
+  title: string; // the heading's text, code ticks dropped
+  text: string;  // the section's Markdown without its heading line
+}
+
+/** Value of the section select that shows the whole plan. */
+export const WHOLE_PLAN = "Whole plan";
+const OVERVIEW = "Overview";
+
+/**
+ * The plan body (planBody) split on its "## " headings. Big Markdown is what costs the renderer
+ * the most, so the plan pane renders one section at a time. "## " lines inside fenced code blocks
+ * are not headings. An empty overview is left out.
+ */
+export function planSections(text: string): PlanSection[] {
+  const sections: PlanSection[] = [];
+  let title = OVERVIEW;
+  let lines: string[] = [];
+  let fence: string | null = null;
+  const flush = () => {
+    const body = lines.join("\n").replace(/^(\s*\r?\n)+/, "").replace(/\s+$/, "");
+    if (body || title !== OVERVIEW) sections.push({ title, text: body });
+  };
+  for (const line of planBody(text).split("\n")) {
+    const marker = /^[ \t]*(```|~~~)/.exec(line)?.[1];
+    if (marker) fence = fence === null ? marker : fence === marker ? null : fence;
+    const heading = fence === null && !marker ? /^##[ \t]+(.+?)[ \t#]*\r?$/.exec(line) : null;
+    if (heading) {
+      flush();
+      title = heading[1]!.replace(/`/g, "").trim();
+      lines = [];
+    } else {
+      lines.push(line);
+    }
+  }
+  flush();
+  return sections;
+}
+
+/** The section a view shows: the one it chose if the plan still has it, else the first. */
+function shownSection(state: TabState, sections: PlanSection[]): PlanSection | null {
+  if (state.section === WHOLE_PLAN && state.planText !== null) return { title: WHOLE_PLAN, text: planBody(state.planText) };
+  return sections.find((s) => s.title === state.section) ?? sections[0] ?? null;
+}
+
+/** Option value of section i (titles may repeat, values may not). */
+export function sectionValue(index: number): string {
+  return `s${index}`;
+}
+
+/** The section title an option value of the section select stands for, or null. */
+export function sectionTitle(planText: string | null, value: string): string | null {
+  if (value === WHOLE_PLAN) return WHOLE_PLAN;
+  const index = /^s(\d+)$/.exec(value)?.[1];
+  if (index === undefined || planText === null) return null;
+  return planSections(planText)[Number(index)]?.title ?? null;
+}
+
 function relativePath(root: string, file: string): string {
   const rel = relative(root, file);
   return rel && !rel.startsWith("..") ? rel.split("\\").join("/") : file;
@@ -478,7 +570,7 @@ function emptyState(key: string, text: string, buttons: Node[], style: Style): N
     ui.icon(`${key}-icon`, "tasks", "text_muted"),
     ui.text(`${key}-text`, text, { size: "sm", color: "text_subtle", wrap: "wrap" }),
   ];
-  if (buttons.length > 0) children.push(hrow(`${key}-buttons`, buttons));
+  if (buttons.length > 0) children.push(flow(`${key}-buttons`, buttons, {}, "center"));
   return ui.flex(key, children, {
     direction: "column",
     align: "center",
@@ -500,7 +592,7 @@ export function detailTop(state: TabState, task: Task): Node {
   const live = isLive(run);
   const badge = statusBadge(task, run);
 
-  // One status mark: the status select below. A chip only for what the select cannot say.
+  // A chip for a live state ("running", "needs you"): the status row shows the plan's status.
   const chips: Node[] = [];
   if (run !== null && run.endedAt === null && badge.text !== STATUS_BADGES[task.status].text) {
     chips.push(ui.badge("detail-live", badge.text, badge.tone));
@@ -528,48 +620,30 @@ export function detailTop(state: TabState, task: Task): Node {
           enabled: starting ? "no" : "yes",
         }),
       ];
-  const actions = hrow(
-    "detail-actions",
-    [
-      hrow("detail-buttons", [
-        ...runControl,
-        ui.button("detail-run-worktree", ACTIONS.runWorktree, {
-          label: "Run in worktree",
-          icon: "git-branch",
-          variant: "secondary",
-          enabled: live || starting ? "no" : "yes",
-        }),
-        ui.button("detail-variants", ACTIONS.variants, { label: "Compare agents", icon: "exchange", variant: "ghost" }),
-      ]),
-      hrow(
-        "detail-editors",
-        [
-          iconButton("detail-edit", ACTIONS.edit, "pencil", "Edit in editor"),
-          iconButton("detail-quick-edit", ACTIONS.quickEdit, "magic", "Edit with a prompt"),
-        ],
-        { gap: "xs" },
-      ),
-    ],
-    { width: "fill" },
-    "between",
-  );
-
-  const statusRow = hrow("detail-status-row", [
-    ui.flex("detail-status-label-box", [ui.text("detail-status-label", "Status", { size: "xs", color: "text_muted" })], {
-      direction: "row",
-      align: "center",
-      style: { width: { fixed: 64 } },
+  // One row that wraps: on a narrow pane the buttons go to a second line, nothing overlaps.
+  const actions = flow("detail-actions", [
+    ...runControl,
+    ui.button("detail-run-worktree", ACTIONS.runWorktree, {
+      label: "Run in worktree",
+      icon: "git-branch",
+      variant: "secondary",
+      enabled: live || starting ? "no" : "yes",
     }),
-    ui.select(
-      "detail-status",
-      ACTIONS.setStatus,
-      TASK_STATUSES.map((status) => ({ value: status, label: status })),
-      task.status,
-    ),
+    ui.button("detail-variants", ACTIONS.variants, { label: "Compare agents", icon: "exchange", variant: "ghost" }),
+    iconButton("detail-edit", ACTIONS.edit, "note", "Edit in editor"),
+    iconButton("detail-quick-edit", ACTIONS.quickEdit, "magic", "Edit with a prompt"),
+  ]);
+
+  // The status as one pill and a button to the app's picker: a five-option select wraps badly.
+  const plan = STATUS_BADGES[task.status];
+  const statusRow = flow("detail-status-row", [
+    ui.text("detail-status-label", "Status", { size: "xs", color: "text_muted", wrap: "no_wrap" }),
+    ui.badge("detail-status-badge", plan.text, plan.tone),
+    ui.button("detail-status", ACTIONS.setStatus, { label: "Change status", icon: "pencil", variant: "ghost" }),
   ]);
 
   const heading: Node[] = [
-    hrow("detail-eyebrow", [
+    flow("detail-eyebrow", [
       ui.text("detail-plan-id", `Plan ${task.id}`, { size: "xs", weight: "medium", color: "text_muted", wrap: "no_wrap" }),
       ui.text("detail-file-path", relativePath(state.set.root, task.file), {
         size: "xs",
@@ -580,7 +654,7 @@ export function detailTop(state: TabState, task: Task): Node {
     ]),
     ui.text("detail-title", task.title, { size: "lg", weight: "bold", color: "text_strong", wrap: "wrap" }),
   ];
-  if (chips.length > 0) heading.push(hrow("detail-chips", chips, { gap: "sm" }));
+  if (chips.length > 0) heading.push(flow("detail-chips", chips));
 
   const children: Node[] = [vstack("detail-heading", heading, { gap: "sm", width: "fill" }), actions, statusRow];
   if (run !== null) {
@@ -600,21 +674,64 @@ export function detailTop(state: TabState, task: Task): Node {
   return stack(KEYS.detailTop, children);
 }
 
-/** The plan text in a scroll that takes the rest of the pane's height. */
-export function planPane(state: TabState): Node {
-  let children: Node[];
+/** The scroll with the shown section's Markdown: what a section switch patches. */
+export function planScroll(state: TabState): Node {
+  let child: Node;
   if (state.planText === null) {
-    children = [ui.text("detail-unreadable", "Cannot read the plan file.", { size: "sm", color: "text_muted" })];
+    child = ui.text("detail-unreadable", "Cannot read the plan file.", { size: "sm", color: "text_muted" });
   } else {
-    children = [ui.markdown("plan-md", planBody(state.planText))];
+    const section = shownSection(state, planSections(state.planText));
+    child =
+      section === null || section.text === ""
+        ? ui.text("plan-empty", "Nothing written here yet.", { size: "sm", color: "text_muted" })
+        : ui.markdown("plan-md", section.text);
   }
   // Style has a single padding for all sides; xs keeps the scrollbar off the text.
-  return { key: KEYS.plan, type: "scroll", direction: "column", style: { height: "fill", padding: "xs", gap: "md" }, children };
+  return {
+    key: KEYS.planScroll,
+    type: "scroll",
+    direction: "column",
+    style: { height: "fill", padding: "xs" },
+    children: [child],
+  };
+}
+
+/** The section select: one chip per section, then "Whole plan". Null for a plan of one section. */
+export function sectionSelect(state: TabState): Node | null {
+  if (state.planText === null) return null;
+  const sections = planSections(state.planText);
+  if (sections.length < 2) return null;
+  const shown = shownSection(state, sections);
+  const options = sections.map((s, index) => ({ value: sectionValue(index), label: s.title }));
+  options.push({ value: WHOLE_PLAN, label: WHOLE_PLAN });
+  const index = sections.findIndex((s) => s.title === shown?.title);
+  const value = shown?.title === WHOLE_PLAN ? WHOLE_PLAN : sectionValue(Math.max(0, index));
+  return ui.select(KEYS.planSections, ACTIONS.section, options, value);
+}
+
+/** The plan: the section select over the scroll with one section, taking the pane's remaining height. */
+export function planPane(state: TabState): Node {
+  const select = sectionSelect(state);
+  return stack(KEYS.plan, select === null ? [planScroll(state)] : [select, planScroll(state)], {
+    height: "fill",
+    gap: "sm",
+  });
+}
+
+/**
+ * What the plan pane shows, as a string: a data refresh re-sends the plan only when this changed
+ * (the section list or the shown section's text), never for a change elsewhere in the plan set.
+ */
+export function planSignature(state: TabState): string {
+  if (state.planText === null) return "";
+  const sections = planSections(state.planText);
+  const shown = shownSection(state, sections);
+  return JSON.stringify([sections.map((s) => s.title), shown?.title ?? "", shown?.text ?? ""]);
 }
 
 export function taskDetail(state: TabState): Node {
   const task = selectedTask(state);
-  // height "fill" inside the body row: takes the width the tasks pane leaves.
+  // height "fill": side by side it takes the width the tasks pane leaves; stacked, the height.
   if (task === undefined) {
     return emptyState(KEYS.detail, "Select a task to read its plan", [], { height: "fill" });
   }
@@ -647,7 +764,9 @@ export function tasklistView(state: TabState, page: PageChrome | null = null): N
       ),
     );
   } else {
-    children.push(band(KEYS.body, [tasksPane(state), taskDetail(state)], { width: "fill", height: "fill", gap: "lg" }));
+    const panes = [tasksPane(state), taskDetail(state)];
+    const style: Style = { width: "fill", height: "fill", gap: "lg" };
+    children.push(state.layout === "stack" ? stack(KEYS.body, panes, style) : band(KEYS.body, panes, style));
   }
   return stack(KEYS.root, children, { width: "fill", height: "fill", padding: "lg", gap: "lg" });
 }
@@ -673,5 +792,6 @@ export function viewShape(state: TabState): string {
     state.set.problems.length > 0,
     filteredTasks(state).length > 0,
     task?.id ?? "",
+    state.layout ?? "side",
   ].join("|");
 }
