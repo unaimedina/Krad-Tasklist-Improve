@@ -522,18 +522,19 @@ test("switching section patches the section select (with the new value) and the 
   // The choice holds across renders.
   assert.equal(findNode((await request("view/render", ref)).result, "plan-md").text, "1. Do it.");
 
-  // All: the select on All, the whole plan (without its H1 and Status section) as one node per section.
+  // All: the select on All, the whole plan (without its H1 and Status section) as the scroll's one
+  // Markdown node.
   notify("view/event", { ...ref, event: { kind: "select", action: "section", value: "all" } });
   const all = await waitFor((m) => isPatch(m) && JSON.stringify(m.params.patches).includes("Because."));
   assert.deepEqual(patchKeys(all), ["plan-sections", "plan-scroll"]);
   assert.equal(all.params.patches[0].node.value, "all");
   const parts = all.params.patches[1].node.children;
-  assert.deepEqual(parts.map((n) => n.key), ["plan-md-0", "plan-md-1", "plan-md-2"]);
-  assert.deepEqual(parts.map((n) => n.text), ["Intro text.", "## Why this matters\n\nBecause.", "## Steps\n\n1. Do it."]);
-  assert.ok(!JSON.stringify(parts).includes("# Plan 005") && !JSON.stringify(parts).includes("Priority"));
+  assert.deepEqual(parts.map((n) => [n.key, n.type]), [["plan-md", "markdown"]]);
+  assert.equal(parts[0].text, "Intro text.\n\n## Why this matters\n\nBecause.\n\n## Steps\n\n1. Do it.\n");
+  assert.ok(!parts[0].text.includes("# Plan 005") && !parts[0].text.includes("Priority"));
   assert.equal(findNode((await request("view/render", ref)).result, "plan-sections").value, "all");
 
-  // A change to one section, with All shown: only that section's node is re-sent.
+  // A change to the plan, with All shown: only the one Markdown node is re-sent, not the scroll or the pane.
   writeFileSync(
     join(dir, "plans", "005-five.md"),
     "# Plan 005: Plan five\n\nIntro text.\n\n## Status\n\n- **Priority**: P1\n\n## Why this matters\n\nBecause, really.\n\n## Steps\n\n1. Do it.\n",
@@ -541,8 +542,8 @@ test("switching section patches the section select (with the new value) and the 
   notify("workspace/event", { kind: "file_saved", path: join(dir, "plans", "005-five.md") });
   const refreshed = await waitFor((m) => isPatch(m) && JSON.stringify(m.params.patches).includes("Because, really."));
   const planKeys = patchKeys(refreshed).filter((k) => k.startsWith("plan") || k === "detail-plan");
-  assert.deepEqual(planKeys, ["plan-md-1"]);
-  assert.equal(refreshed.params.patches.find((p) => p.node?.key === "plan-md-1").node.text, "## Why this matters\n\nBecause, really.");
+  assert.deepEqual(planKeys, ["plan-md"]);
+  assert.ok(refreshed.params.patches.find((p) => p.node?.key === "plan-md").node.text.includes("Because, really."));
 });
 
 test("Open in Krad's viewer opens the plan file in the app", async (t) => {

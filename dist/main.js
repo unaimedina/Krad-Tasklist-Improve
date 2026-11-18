@@ -1479,19 +1479,15 @@ function shownSection(state, sections) {
   }
   return sections.find((s) => s.title === state.section) ?? sections[0] ?? null;
 }
+var PLAN_MD = "plan-md";
+function planMarkdown(state) {
+  if (state.planText === null) return "_Cannot read the plan file._";
+  if (state.section === WHOLE_PLAN) return planBody(state.planText) || "_Nothing written here yet._";
+  const shown = shownSection(state, planSections(state.planText));
+  return shown === null || shown.text === "" ? "_Nothing written here yet._" : shown.text;
+}
 function planParts(state) {
-  if (state.planText === null) return [];
-  const sections = planSections(state.planText);
-  if (state.section === WHOLE_PLAN) {
-    return sections.map((s, index) => ({
-      key: `plan-md-${index}`,
-      text: s.heading === null ? s.text : s.text ? `${s.heading}
-
-${s.text}` : s.heading
-    }));
-  }
-  const shown = shownSection(state, sections);
-  return shown === null || shown.text === "" ? [] : [{ key: "plan-md", text: shown.text }];
+  return [{ key: PLAN_MD, text: planMarkdown(state) }];
 }
 function planPartNode(part) {
   return ui.markdown(part.key, part.text);
@@ -1609,19 +1605,12 @@ function detailTop(state, task) {
   return stack(KEYS.detailTop, children);
 }
 function planScroll(state) {
-  let children;
-  if (state.planText === null) {
-    children = [ui.text("detail-unreadable", "Cannot read the plan file.", { size: "sm", color: "text_muted" })];
-  } else {
-    const parts = planParts(state);
-    children = parts.length === 0 ? [ui.text("plan-empty", "Nothing written here yet.", { size: "sm", color: "text_muted" })] : parts.map(planPartNode);
-  }
   return {
     key: KEYS.planScroll,
     type: "scroll",
     direction: "column",
-    style: { height: "fill", padding: "xs", gap: "md" },
-    children
+    style: { height: "fill", padding: "xs" },
+    children: planParts(state).map(planPartNode)
   };
 }
 function sectionSelect(state) {

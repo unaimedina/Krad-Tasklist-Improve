@@ -360,8 +360,8 @@ function refreshOpen(open: OpenView, context: Context): void {
 
 /**
  * The patches that bring the plan pane up to date. While its outline (section titles, the section
- * shown) and its node keys hold, only the Markdown nodes whose text changed are replaced, so with
- * All the unchanged sections keep their layout; otherwise the plan pane is replaced.
+ * shown) holds, only the scroll's one Markdown node is replaced, and only when its text changed;
+ * otherwise the plan pane (select and scroll) is replaced.
  */
 function planPatches(open: OpenView, state: TabState): Patch[] {
   const parts = planParts(state);

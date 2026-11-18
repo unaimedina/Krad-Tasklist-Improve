@@ -698,23 +698,16 @@ test("the plan pane renders one section at a time; All, first in the select, ren
   // The default is the first real section (Overview), not All: the whole plan is the heaviest to render.
   assert.equal(sectionSelect(base).value, sectionValue(0));
   assert.equal(sectionSelect({ ...base, section: null }).value, sectionValue(0));
-  // All selected: the select shows it; the scroll has one Markdown node per section, keyed by index,
-  // each with its own heading line as written, nothing else between them.
+  // All selected: the select shows it; the scroll's only child is ONE Markdown node with the whole
+  // plan (no H1, no ## Status), Krad's lazily laid-out fast path.
   assert.equal(sectionSelect(whole).value, ALL_SECTIONS.value);
   const scroll = planScroll(whole);
-  assert.deepEqual(scroll.children.map((n) => n.type), ["markdown", "markdown", "markdown", "markdown"]);
-  assert.deepEqual(scroll.children.map((n) => n.key), ["plan-md-0", "plan-md-1", "plan-md-2", "plan-md-3"]);
-  assert.deepEqual(
-    scroll.children.map((n) => n.text),
-    [
-      "> **Executor instructions**: follow the steps.",
-      "## Why this matters\n\nBecause.",
-      "## Steps\n\n1. One.\n\n```sh\n## not a heading, inside a fence\n```",
-      "## `Done` criteria ##\n\n- [ ] tests pass",
-    ],
-  );
-  assert.deepEqual(planParts(whole), scroll.children.map((n) => ({ key: n.key, text: n.text })));
-  // One section: one node, "plan-md", without its heading.
+  assert.equal(scroll.children.length, 1);
+  assert.equal(scroll.children[0].type, "markdown");
+  assert.equal(scroll.children[0].key, "plan-md");
+  assert.equal(scroll.children[0].text, planBody(PLAN));
+  assert.deepEqual(planParts(whole), [{ key: "plan-md", text: planBody(PLAN) }]);
+  // One section: the same one node, without its heading.
   assert.deepEqual(planParts(steps).map((p) => p.key), ["plan-md"]);
   // Option values map back to titles; All maps to the whole plan.
   assert.equal(sectionTitle(PLAN, sectionValue(1)), "Why this matters");
@@ -726,10 +719,40 @@ test("the plan pane renders one section at a time; All, first in the select, ren
   assert.deepEqual(ownSelect.options.map((o) => o.label), ["All", "Overview", "All"]);
   assert.equal(ownSelect.value, sectionValue(1));
   assert.equal(markdown({ ...own, section: "All" })[0].text, "Only this.");
-  assert.deepEqual(markdown({ ...own, section: WHOLE_PLAN }).map((n) => n.text), ["Intro.", "## All\n\nOnly this."]);
+  assert.deepEqual(markdown({ ...own, section: WHOLE_PLAN }).map((n) => n.text), [planBody(own.planText)]);
   // The signature changes with the shown section, not with other sections' text.
   const other = { ...base, planText: PLAN.replace("Because.", "Because, really.") };
   assert.equal(planSignature(base), planSignature({ ...other }));
   assert.notEqual(planSignature(base), planSignature(steps));
   assert.notEqual(planSignature(base), planSignature({ ...base, planText: PLAN.replace("follow the steps", "read first") }));
+});
+
+test("the plan scroll always has exactly one child, a Markdown node", () => {
+  const plan = "# Plan 003: x\n\nIntro.\n\n## Status\n\n- **Priority**: P1\n\n## Steps\n\n1. One.\n\n## Empty\n";
+  const cases = {
+    "first section": makeState({ selected: "003", planText: plan }),
+    "a section": makeState({ selected: "003", planText: plan, section: "Steps" }),
+    "an empty section": makeState({ selected: "003", planText: plan, section: "Empty" }),
+    All: makeState({ selected: "003", planText: plan, section: WHOLE_PLAN }),
+    "a gone section": makeState({ selected: "003", planText: plan, section: "Gone" }),
+    "a one-section plan": makeState({ selected: "003", planText: "# Plan 003: x\n\nOnly text." }),
+    "an empty plan": makeState({ selected: "003", planText: "# Plan 003: x\n" }),
+    "an empty plan, All": makeState({ selected: "003", planText: "# Plan 003: x\n", section: WHOLE_PLAN }),
+    "an unreadable file": makeState({ selected: "003", planText: null }),
+  };
+  for (const [name, state] of Object.entries(cases)) {
+    for (const scroll of [planScroll(state), find(taskDetail(state), (n) => n.key === KEYS.planScroll)]) {
+      assert.equal(scroll.type, "scroll", name);
+      assert.equal(scroll.direction, "column", name);
+      assert.equal(scroll.children.length, 1, name);
+      assert.equal(scroll.children[0].type, "markdown", name);
+      assert.equal(scroll.children[0].key, "plan-md", name);
+      assert.equal(scroll.children[0].children, undefined, name);
+    }
+  }
+  assert.equal(planScroll(cases["an empty section"]).children[0].text, "_Nothing written here yet._");
+  assert.equal(planScroll(cases["an unreadable file"]).children[0].text, "_Cannot read the plan file._");
+  // The section select sits outside the scroll, next to it in the plan pane.
+  const pane = find(taskDetail(cases.All), (n) => n.key === KEYS.plan);
+  assert.deepEqual(pane.children.map((n) => n.key), [KEYS.planSections, KEYS.planScroll]);
 });
