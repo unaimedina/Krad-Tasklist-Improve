@@ -1095,6 +1095,8 @@ var ACTIONS = {
   // compare agents on this task with Krad variants
   edit: "edit",
   // open the plan file in Krad's editor
+  openViewer: "open-viewer",
+  // open the plan file in Krad, to read it in its Markdown preview
   quickEdit: "quick-edit",
   // edit the plan with a prompt: an agent changes the Markdown
   setStatus: "set-status",
@@ -1448,11 +1450,12 @@ var OVERVIEW = "Overview";
 function planSections(text) {
   const sections = [];
   let title = OVERVIEW;
+  let headingLine = null;
   let lines = [];
   let fence = null;
   const flush = () => {
     const body = lines.join("\n").replace(/^(\s*\r?\n)+/, "").replace(/\s+$/, "");
-    if (body || title !== OVERVIEW) sections.push({ title, text: body });
+    if (body || headingLine !== null) sections.push({ title, heading: headingLine, text: body });
   };
   for (const line of planBody(text).split("\n")) {
     const marker = /^[ \t]*(```|~~~)/.exec(line)?.[1];
@@ -1461,6 +1464,7 @@ function planSections(text) {
     if (heading) {
       flush();
       title = heading[1].replace(/`/g, "").trim();
+      headingLine = line.replace(/\s+$/, "");
       lines = [];
     } else {
       lines.push(line);
@@ -1470,8 +1474,33 @@ function planSections(text) {
   return sections;
 }
 function shownSection(state, sections) {
-  if (state.section === WHOLE_PLAN && state.planText !== null) return { title: WHOLE_PLAN, text: planBody(state.planText) };
+  if (state.section === WHOLE_PLAN && state.planText !== null) {
+    return { title: WHOLE_PLAN, heading: null, text: planBody(state.planText) };
+  }
   return sections.find((s) => s.title === state.section) ?? sections[0] ?? null;
+}
+function planParts(state) {
+  if (state.planText === null) return [];
+  const sections = planSections(state.planText);
+  if (state.section === WHOLE_PLAN) {
+    return sections.map((s, index) => ({
+      key: `plan-md-${index}`,
+      text: s.heading === null ? s.text : s.text ? `${s.heading}
+
+${s.text}` : s.heading
+    }));
+  }
+  const shown = shownSection(state, sections);
+  return shown === null || shown.text === "" ? [] : [{ key: "plan-md", text: shown.text }];
+}
+function planPartNode(part) {
+  return ui.markdown(part.key, part.text);
+}
+function planOutline(state) {
+  if (state.planText === null) return "";
+  const sections = planSections(state.planText);
+  const shown = shownSection(state, sections);
+  return JSON.stringify([sections.map((s) => s.title), shown?.title ?? ""]);
 }
 function sectionValue(index) {
   return `s${index}`;
@@ -1540,6 +1569,7 @@ function detailTop(state, task) {
     }),
     ui.button("detail-variants", ACTIONS.variants, { label: "Compare agents", icon: "exchange", variant: "ghost" }),
     iconButton("detail-edit", ACTIONS.edit, "note", "Edit in editor"),
+    iconButton("detail-open-viewer", ACTIONS.openViewer, "open-external", "Open in Krad's viewer"),
     iconButton("detail-quick-edit", ACTIONS.quickEdit, "magic", "Edit with a prompt")
   ]);
   const plan = STATUS_BADGES[task.status];
@@ -1579,19 +1609,19 @@ function detailTop(state, task) {
   return stack(KEYS.detailTop, children);
 }
 function planScroll(state) {
-  let child;
+  let children;
   if (state.planText === null) {
-    child = ui.text("detail-unreadable", "Cannot read the plan file.", { size: "sm", color: "text_muted" });
+    children = [ui.text("detail-unreadable", "Cannot read the plan file.", { size: "sm", color: "text_muted" })];
   } else {
-    const section = shownSection(state, planSections(state.planText));
-    child = section === null || section.text === "" ? ui.text("plan-empty", "Nothing written here yet.", { size: "sm", color: "text_muted" }) : ui.markdown("plan-md", section.text);
+    const parts = planParts(state);
+    children = parts.length === 0 ? [ui.text("plan-empty", "Nothing written here yet.", { size: "sm", color: "text_muted" })] : parts.map(planPartNode);
   }
   return {
     key: KEYS.planScroll,
     type: "scroll",
     direction: "column",
-    style: { height: "fill", padding: "xs" },
-    children: [child]
+    style: { height: "fill", padding: "xs", gap: "md" },
+    children
   };
 }
 function sectionSelect(state) {
@@ -1616,9 +1646,7 @@ function planPane(state) {
 }
 function planSignature(state) {
   if (state.planText === null) return "";
-  const sections = planSections(state.planText);
-  const shown = shownSection(state, sections);
-  return JSON.stringify([sections.map((s) => s.title), shown?.title ?? "", shown?.text ?? ""]);
+  return JSON.stringify([planOutline(state), planParts(state)]);
 }
 function taskDetail(state) {
   const task = selectedTask(state);
@@ -1803,7 +1831,7 @@ async function openViewOf(ref, context, reresolve) {
   const id = refId(ref);
   let open = openViews.get(id);
   if (!open) {
-    open = { ref: { view: ref.view, instance: ref.instance }, root: null, groups: [], shape: null, planSig: "", state: null };
+    open = { ref: { view: ref.view, instance: ref.instance }, root: null, groups: [], shape: null, planSig: "", planOutline: "", planParts: [], state: null };
     openViews.set(id, open);
     reresolve = true;
     if (ref.view === PAGE) Object.assign(open, await resolvePage(context));
@@ -1823,6 +1851,8 @@ function chromeOf(open) {
 function remember(open, state) {
   open.shape = state === null ? null : viewShape(state);
   open.planSig = state === null ? "" : planSignature(state);
+  open.planOutline = state === null ? "" : planOutline(state);
+  open.planParts = state === null ? [] : planParts(state);
   open.state = state;
 }
 function build(open) {
@@ -1859,10 +1889,17 @@ function refreshOpen(open, context) {
   const task = state.selected === null ? void 0 : state.set.tasks.find((t) => t.id === state.selected);
   if (task !== void 0) {
     patches.push(patch.replace(detailTop(state, task)));
-    if (planSignature(state) !== open.planSig) patches.push(patch.replace(planPane(state)));
+    if (planSignature(state) !== open.planSig) patches.push(...planPatches(open, state));
   }
   remember(open, state);
   patchOpen(open, context, patches);
+}
+function planPatches(open, state) {
+  const parts = planParts(state);
+  const before = open.planParts;
+  const sameNodes = parts.length > 0 && parts.length === before.length && parts.every((part, index) => part.key === before[index].key);
+  if (planOutline(state) !== open.planOutline || !sameNodes) return [patch.replace(planPane(state))];
+  return parts.filter((part, index) => part.text !== before[index].text).map((part) => patch.replace(planPartNode(part)));
 }
 function refreshRoot(root, context) {
   for (const open of openViews.values()) {
@@ -2301,6 +2338,7 @@ async function taskAction(open, root, action, id, context) {
       await runVariants(root, task, context);
       return;
     case ACTIONS.edit:
+    case ACTIONS.openViewer:
       await context.app.openFile({ path: task.file });
       return;
     case ACTIONS.quickEdit:
@@ -2350,6 +2388,7 @@ async function onViewEvent(event, ref, context) {
         case ACTIONS.runWorktree:
         case ACTIONS.variants:
         case ACTIONS.edit:
+        case ACTIONS.openViewer:
         case ACTIONS.quickEdit:
           if (ui2.selected !== null) await taskAction(open, root, event.action, ui2.selected, context);
           return;
@@ -2363,7 +2402,8 @@ async function onViewEvent(event, ref, context) {
       ui2.section = title;
       const next = { ...state, section: title };
       remember(open, next);
-      patchOpen(open, context, [patch.replace(planScroll(next))]);
+      const select = sectionSelect(next);
+      patchOpen(open, context, select === null ? [patch.replace(planScroll(next))] : [patch.replace(select), patch.replace(planScroll(next))]);
       return;
     }
     if (event.kind === "select" && event.action === ACTIONS.filter) {

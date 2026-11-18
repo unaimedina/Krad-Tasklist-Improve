@@ -46,6 +46,8 @@ var ACTIONS = {
   // compare agents on this task with Krad variants
   edit: "edit",
   // open the plan file in Krad's editor
+  openViewer: "open-viewer",
+  // open the plan file in Krad, to read it in its Markdown preview
   quickEdit: "quick-edit",
   // edit the plan with a prompt: an agent changes the Markdown
   setStatus: "set-status",
@@ -399,11 +401,12 @@ var OVERVIEW = "Overview";
 function planSections(text) {
   const sections = [];
   let title = OVERVIEW;
+  let headingLine = null;
   let lines = [];
   let fence = null;
   const flush = () => {
     const body = lines.join("\n").replace(/^(\s*\r?\n)+/, "").replace(/\s+$/, "");
-    if (body || title !== OVERVIEW) sections.push({ title, text: body });
+    if (body || headingLine !== null) sections.push({ title, heading: headingLine, text: body });
   };
   for (const line of planBody(text).split("\n")) {
     const marker = /^[ \t]*(```|~~~)/.exec(line)?.[1];
@@ -412,6 +415,7 @@ function planSections(text) {
     if (heading) {
       flush();
       title = heading[1].replace(/`/g, "").trim();
+      headingLine = line.replace(/\s+$/, "");
       lines = [];
     } else {
       lines.push(line);
@@ -421,8 +425,33 @@ function planSections(text) {
   return sections;
 }
 function shownSection(state, sections) {
-  if (state.section === WHOLE_PLAN && state.planText !== null) return { title: WHOLE_PLAN, text: planBody(state.planText) };
+  if (state.section === WHOLE_PLAN && state.planText !== null) {
+    return { title: WHOLE_PLAN, heading: null, text: planBody(state.planText) };
+  }
   return sections.find((s) => s.title === state.section) ?? sections[0] ?? null;
+}
+function planParts(state) {
+  if (state.planText === null) return [];
+  const sections = planSections(state.planText);
+  if (state.section === WHOLE_PLAN) {
+    return sections.map((s, index) => ({
+      key: `plan-md-${index}`,
+      text: s.heading === null ? s.text : s.text ? `${s.heading}
+
+${s.text}` : s.heading
+    }));
+  }
+  const shown = shownSection(state, sections);
+  return shown === null || shown.text === "" ? [] : [{ key: "plan-md", text: shown.text }];
+}
+function planPartNode(part) {
+  return ui.markdown(part.key, part.text);
+}
+function planOutline(state) {
+  if (state.planText === null) return "";
+  const sections = planSections(state.planText);
+  const shown = shownSection(state, sections);
+  return JSON.stringify([sections.map((s) => s.title), shown?.title ?? ""]);
 }
 function sectionValue(index) {
   return `s${index}`;
@@ -491,6 +520,7 @@ function detailTop(state, task) {
     }),
     ui.button("detail-variants", ACTIONS.variants, { label: "Compare agents", icon: "exchange", variant: "ghost" }),
     iconButton("detail-edit", ACTIONS.edit, "note", "Edit in editor"),
+    iconButton("detail-open-viewer", ACTIONS.openViewer, "open-external", "Open in Krad's viewer"),
     iconButton("detail-quick-edit", ACTIONS.quickEdit, "magic", "Edit with a prompt")
   ]);
   const plan = STATUS_BADGES[task.status];
@@ -530,19 +560,19 @@ function detailTop(state, task) {
   return stack(KEYS.detailTop, children);
 }
 function planScroll(state) {
-  let child;
+  let children;
   if (state.planText === null) {
-    child = ui.text("detail-unreadable", "Cannot read the plan file.", { size: "sm", color: "text_muted" });
+    children = [ui.text("detail-unreadable", "Cannot read the plan file.", { size: "sm", color: "text_muted" })];
   } else {
-    const section = shownSection(state, planSections(state.planText));
-    child = section === null || section.text === "" ? ui.text("plan-empty", "Nothing written here yet.", { size: "sm", color: "text_muted" }) : ui.markdown("plan-md", section.text);
+    const parts = planParts(state);
+    children = parts.length === 0 ? [ui.text("plan-empty", "Nothing written here yet.", { size: "sm", color: "text_muted" })] : parts.map(planPartNode);
   }
   return {
     key: KEYS.planScroll,
     type: "scroll",
     direction: "column",
-    style: { height: "fill", padding: "xs" },
-    children: [child]
+    style: { height: "fill", padding: "xs", gap: "md" },
+    children
   };
 }
 function sectionSelect(state) {
@@ -567,9 +597,7 @@ function planPane(state) {
 }
 function planSignature(state) {
   if (state.planText === null) return "";
-  const sections = planSections(state.planText);
-  const shown = shownSection(state, sections);
-  return JSON.stringify([sections.map((s) => s.title), shown?.title ?? "", shown?.text ?? ""]);
+  return JSON.stringify([planOutline(state), planParts(state)]);
 }
 function taskDetail(state) {
   const task = selectedTask(state);
@@ -650,7 +678,10 @@ export {
   header,
   noGroupView,
   planBody,
+  planOutline,
   planPane,
+  planPartNode,
+  planParts,
   planScroll,
   planSections,
   planSignature,
