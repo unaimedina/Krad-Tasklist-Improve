@@ -15,6 +15,7 @@ import {
   STACK_TASKS_H,
   WHOLE_PLAN,
   ALL_SECTIONS,
+  planParts,
   planScroll,
   planSections,
   planSignature,
@@ -311,14 +312,14 @@ test("taskDetail shows the plan, the note, and the quick editor", () => {
   assert.equal(actionsRow.wrap, "wrap");
   assert.equal(actionsRow.justify, "start");
   assert.equal(actionsRow.style.gap, "sm");
-  const editors = actionsRow.children.slice(-2);
+  const editors = actionsRow.children.slice(-3);
   for (const button of editors) {
     assert.equal(button.variant, "ghost");
     assert.ok(button.tooltip && !button.label);
   }
-  assert.deepEqual(editors.map((n) => n.icon), ["note", "magic"]);
-  assert.deepEqual(editors.map((n) => n.tooltip), ["Edit in editor", "Edit with a prompt"]);
-  assert.equal(editors[1].action, ACTIONS.quickEdit);
+  assert.deepEqual(editors.map((n) => n.icon), ["note", "open-external", "magic"]);
+  assert.deepEqual(editors.map((n) => n.tooltip), ["Edit in editor", "Open in Krad's viewer", "Edit with a prompt"]);
+  assert.deepEqual(editors.map((n) => n.action), [ACTIONS.edit, ACTIONS.openViewer, ACTIONS.quickEdit]);
   // Status: the pill and a "Change status" button to the app's picker; no five-option select.
   const statusRow = find(detail, (n) => n.key === "detail-status-row");
   assert.equal(statusRow.wrap, "wrap");
@@ -682,7 +683,8 @@ test("the plan pane renders one section at a time; All, first in the select, ren
   assert.equal(markdown(steps).length, 1);
   assert.ok(markdown(steps)[0].text.startsWith("1. One."));
   const whole = { ...base, section: WHOLE_PLAN };
-  assert.ok(markdown(whole)[0].text.includes("Because.") && markdown(whole)[0].text.includes("tests pass"));
+  assert.ok(markdown(whole).some((n) => n.text.includes("Because.")));
+  assert.ok(markdown(whole).some((n) => n.text.includes("tests pass")));
   // A section that is gone falls back to the first.
   assert.equal(markdown({ ...base, section: "Gone" })[0].text, "> **Executor instructions**: follow the steps.");
   // The select: All first, then one option per section; no other whole-plan option at the end.
@@ -696,10 +698,17 @@ test("the plan pane renders one section at a time; All, first in the select, ren
   // The default is the first real section (Overview), not All: the whole plan is the heaviest to render.
   assert.equal(sectionSelect(base).value, sectionValue(0));
   assert.equal(sectionSelect({ ...base, section: null }).value, sectionValue(0));
-  // All selected: the select shows it, the scroll has the whole plan in one Markdown node.
+  // All selected: the select shows it; the scroll's only child is ONE Markdown node with the whole
+  // plan (no H1, no ## Status), Krad's lazily laid-out fast path.
   assert.equal(sectionSelect(whole).value, ALL_SECTIONS.value);
-  assert.equal(markdown(whole).length, 1);
-  assert.equal(markdown(whole)[0].text, planBody(PLAN));
+  const scroll = planScroll(whole);
+  assert.equal(scroll.children.length, 1);
+  assert.equal(scroll.children[0].type, "markdown");
+  assert.equal(scroll.children[0].key, "plan-md");
+  assert.equal(scroll.children[0].text, planBody(PLAN));
+  assert.deepEqual(planParts(whole), [{ key: "plan-md", text: planBody(PLAN) }]);
+  // One section: the same one node, without its heading.
+  assert.deepEqual(planParts(steps).map((p) => p.key), ["plan-md"]);
   // Option values map back to titles; All maps to the whole plan.
   assert.equal(sectionTitle(PLAN, sectionValue(1)), "Why this matters");
   assert.equal(sectionTitle(PLAN, ALL_SECTIONS.value), WHOLE_PLAN);
@@ -710,10 +719,40 @@ test("the plan pane renders one section at a time; All, first in the select, ren
   assert.deepEqual(ownSelect.options.map((o) => o.label), ["All", "Overview", "All"]);
   assert.equal(ownSelect.value, sectionValue(1));
   assert.equal(markdown({ ...own, section: "All" })[0].text, "Only this.");
-  assert.equal(markdown({ ...own, section: WHOLE_PLAN })[0].text, planBody(own.planText));
+  assert.deepEqual(markdown({ ...own, section: WHOLE_PLAN }).map((n) => n.text), [planBody(own.planText)]);
   // The signature changes with the shown section, not with other sections' text.
   const other = { ...base, planText: PLAN.replace("Because.", "Because, really.") };
   assert.equal(planSignature(base), planSignature({ ...other }));
   assert.notEqual(planSignature(base), planSignature(steps));
   assert.notEqual(planSignature(base), planSignature({ ...base, planText: PLAN.replace("follow the steps", "read first") }));
+});
+
+test("the plan scroll always has exactly one child, a Markdown node", () => {
+  const plan = "# Plan 003: x\n\nIntro.\n\n## Status\n\n- **Priority**: P1\n\n## Steps\n\n1. One.\n\n## Empty\n";
+  const cases = {
+    "first section": makeState({ selected: "003", planText: plan }),
+    "a section": makeState({ selected: "003", planText: plan, section: "Steps" }),
+    "an empty section": makeState({ selected: "003", planText: plan, section: "Empty" }),
+    All: makeState({ selected: "003", planText: plan, section: WHOLE_PLAN }),
+    "a gone section": makeState({ selected: "003", planText: plan, section: "Gone" }),
+    "a one-section plan": makeState({ selected: "003", planText: "# Plan 003: x\n\nOnly text." }),
+    "an empty plan": makeState({ selected: "003", planText: "# Plan 003: x\n" }),
+    "an empty plan, All": makeState({ selected: "003", planText: "# Plan 003: x\n", section: WHOLE_PLAN }),
+    "an unreadable file": makeState({ selected: "003", planText: null }),
+  };
+  for (const [name, state] of Object.entries(cases)) {
+    for (const scroll of [planScroll(state), find(taskDetail(state), (n) => n.key === KEYS.planScroll)]) {
+      assert.equal(scroll.type, "scroll", name);
+      assert.equal(scroll.direction, "column", name);
+      assert.equal(scroll.children.length, 1, name);
+      assert.equal(scroll.children[0].type, "markdown", name);
+      assert.equal(scroll.children[0].key, "plan-md", name);
+      assert.equal(scroll.children[0].children, undefined, name);
+    }
+  }
+  assert.equal(planScroll(cases["an empty section"]).children[0].text, "_Nothing written here yet._");
+  assert.equal(planScroll(cases["an unreadable file"]).children[0].text, "_Cannot read the plan file._");
+  // The section select sits outside the scroll, next to it in the plan pane.
+  const pane = find(taskDetail(cases.All), (n) => n.key === KEYS.plan);
+  assert.deepEqual(pane.children.map((n) => n.key), [KEYS.planSections, KEYS.planScroll]);
 });

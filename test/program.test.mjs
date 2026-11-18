@@ -490,7 +490,7 @@ test("the layout button stacks the panes and remembers it for that view", async 
   assert.equal(findNode((await request("view/render", { view: "tasks" })).result, "body")?.direction, "row");
 });
 
-test("switching section patches only the plan scroll, with that section's Markdown", async (t) => {
+test("switching section patches the section select (with the new value) and the plan scroll", async (t) => {
   const dir = fixtureRoot();
   writeFileSync(
     join(dir, "plans", "005-five.md"),
@@ -515,20 +515,54 @@ test("switching section patches only the plan scroll, with that section's Markdo
   const steps = select.options.find((o) => o.label === "Steps").value;
   notify("view/event", { ...ref, event: { kind: "select", action: "section", value: steps } });
   const switched = await waitFor((m) => isPatch(m) && patchKeys(m).includes("plan-scroll"));
-  assert.deepEqual(patchKeys(switched), ["plan-scroll"]);
-  assert.equal(findNode(switched.params.patches[0].node, "plan-md").text, "1. Do it.");
+  // The select moves its highlight to the chosen section: the app does not do it by itself.
+  assert.deepEqual(patchKeys(switched), ["plan-sections", "plan-scroll"]);
+  assert.equal(switched.params.patches[0].node.value, steps);
+  assert.equal(findNode(switched.params.patches[1].node, "plan-md").text, "1. Do it.");
   // The choice holds across renders.
   assert.equal(findNode((await request("view/render", ref)).result, "plan-md").text, "1. Do it.");
 
-  // All: the whole plan (without its heading and Status section) in the scroll, the select on All.
+  // All: the select on All, the whole plan (without its H1 and Status section) as the scroll's one
+  // Markdown node.
   notify("view/event", { ...ref, event: { kind: "select", action: "section", value: "all" } });
   const all = await waitFor((m) => isPatch(m) && JSON.stringify(m.params.patches).includes("Because."));
-  assert.deepEqual(patchKeys(all), ["plan-scroll"]);
-  const whole = findNode(all.params.patches[0].node, "plan-md").text;
-  assert.ok(whole.startsWith("Intro text."), whole.slice(0, 40));
-  assert.ok(whole.includes("## Why this matters") && whole.includes("1. Do it."));
-  assert.ok(!whole.includes("# Plan 005") && !whole.includes("Priority"));
+  assert.deepEqual(patchKeys(all), ["plan-sections", "plan-scroll"]);
+  assert.equal(all.params.patches[0].node.value, "all");
+  const parts = all.params.patches[1].node.children;
+  assert.deepEqual(parts.map((n) => [n.key, n.type]), [["plan-md", "markdown"]]);
+  assert.equal(parts[0].text, "Intro text.\n\n## Why this matters\n\nBecause.\n\n## Steps\n\n1. Do it.\n");
+  assert.ok(!parts[0].text.includes("# Plan 005") && !parts[0].text.includes("Priority"));
   assert.equal(findNode((await request("view/render", ref)).result, "plan-sections").value, "all");
+
+  // A change to the plan, with All shown: only the one Markdown node is re-sent, not the scroll or the pane.
+  writeFileSync(
+    join(dir, "plans", "005-five.md"),
+    "# Plan 005: Plan five\n\nIntro text.\n\n## Status\n\n- **Priority**: P1\n\n## Why this matters\n\nBecause, really.\n\n## Steps\n\n1. Do it.\n",
+  );
+  notify("workspace/event", { kind: "file_saved", path: join(dir, "plans", "005-five.md") });
+  const refreshed = await waitFor((m) => isPatch(m) && JSON.stringify(m.params.patches).includes("Because, really."));
+  const planKeys = patchKeys(refreshed).filter((k) => k.startsWith("plan") || k === "detail-plan");
+  assert.deepEqual(planKeys, ["plan-md"]);
+  assert.ok(refreshed.params.patches.find((p) => p.node?.key === "plan-md").node.text.includes("Because, really."));
+});
+
+test("Open in Krad's viewer opens the plan file in the app", async (t) => {
+  const dir = fixtureRoot();
+  const { child, request, notify, waitFor, appRequests } = startProgram([{ id: "g", name: "g", root: dir }]);
+  t.after(() => {
+    child.kill();
+    rmSync(dir, { recursive: true, force: true });
+  });
+  const ref = { view: "tasklist", instance: dir };
+  await request("initialize", INIT);
+  await request("view/render", ref);
+  notify("view/event", { ...ref, event: { kind: "choose", node: "tasks", items: ["003"] } });
+  await waitFor((m) => isPatch(m) && patchKeys(m).includes("detail"));
+  notify("view/event", { ...ref, event: { kind: "click", action: "open-viewer" } });
+  await request("view/render", ref);
+  const open = appRequests.find((m) => m.method === "file/open");
+  assert.ok(open, appRequests.map((m) => m.method).join(","));
+  assert.equal(open.params.path, join(dir, "plans", "003-c.md"));
 });
 
 test("rows() serves the list from memory: it works with the plans folder gone", async (t) => {

@@ -33,7 +33,7 @@ import {
 import { hasStopped, isLive, nextLaunches, sessionOver, verdictFor } from "./scheduler.js";
 import type { Harness, PlanSet, RunMode, RunRecord, Task, TaskStatus } from "./types.js";
 import { HARNESSES, TASK_STATUSES } from "./types.js";
-import type { Filter, Layout, PageChrome, SessionInfo, TabState } from "./view.js";
+import type { Filter, Layout, PageChrome, PlanPart, SessionInfo, TabState } from "./view.js";
 import {
   ACTIONS,
   busyKey,
@@ -45,7 +45,11 @@ import {
   noGroupView,
   planPane,
   planScroll,
+  planOutline,
+  planPartNode,
+  planParts,
   planSignature,
+  sectionSelect,
   problemsPanel,
   sectionTitle,
   sessionStrip,
@@ -210,6 +214,9 @@ interface OpenView {
   shape: string | null;
   /** planSignature() of the plan last sent, to leave the plan alone when what it shows did not change. */
   planSig: string;
+  /** planOutline() and planParts() last sent: while the outline holds, only changed parts are replaced. */
+  planOutline: string;
+  planParts: PlanPart[];
   /** The state last sent: rows() builds its rows from it, without touching the disk. */
   state: TabState | null;
 }
@@ -271,7 +278,7 @@ async function openViewOf(ref: ViewRef, context: Context, reresolve: boolean): P
   const id = refId(ref);
   let open = openViews.get(id);
   if (!open) {
-    open = { ref: { view: ref.view, instance: ref.instance }, root: null, groups: [], shape: null, planSig: "", state: null };
+    open = { ref: { view: ref.view, instance: ref.instance }, root: null, groups: [], shape: null, planSig: "", planOutline: "", planParts: [], state: null };
     openViews.set(id, open);
     reresolve = true;
     if (ref.view === PAGE) Object.assign(open, await resolvePage(context));
@@ -295,6 +302,8 @@ function chromeOf(open: OpenView): PageChrome | null {
 function remember(open: OpenView, state: TabState | null): void {
   open.shape = state === null ? null : viewShape(state);
   open.planSig = state === null ? "" : planSignature(state);
+  open.planOutline = state === null ? "" : planOutline(state);
+  open.planParts = state === null ? [] : planParts(state);
   open.state = state;
 }
 
@@ -343,10 +352,24 @@ function refreshOpen(open: OpenView, context: Context): void {
   if (task !== undefined) {
     patches.push(patch.replace(detailTop(state, task)));
     // The Markdown is the heaviest node: re-send it only when what the pane shows changed.
-    if (planSignature(state) !== open.planSig) patches.push(patch.replace(planPane(state)));
+    if (planSignature(state) !== open.planSig) patches.push(...planPatches(open, state));
   }
   remember(open, state);
   patchOpen(open, context, patches);
+}
+
+/**
+ * The patches that bring the plan pane up to date. While its outline (section titles, the section
+ * shown) holds, only the scroll's one Markdown node is replaced, and only when its text changed;
+ * otherwise the plan pane (select and scroll) is replaced.
+ */
+function planPatches(open: OpenView, state: TabState): Patch[] {
+  const parts = planParts(state);
+  const before = open.planParts;
+  const sameNodes =
+    parts.length > 0 && parts.length === before.length && parts.every((part, index) => part.key === before[index]!.key);
+  if (planOutline(state) !== open.planOutline || !sameNodes) return [patch.replace(planPane(state))];
+  return parts.filter((part, index) => part.text !== before[index]!.text).map((part) => patch.replace(planPartNode(part)));
 }
 
 /** Refreshes every view of a group: they share the data, not the selection. */
@@ -850,6 +873,8 @@ async function taskAction(open: OpenView, root: string, action: string, id: stri
       await runVariants(root, task, context);
       return;
     case ACTIONS.edit:
+    case ACTIONS.openViewer:
+      // The SDK's file/open has no preview flag: Krad decides how it shows a Markdown file.
       await context.app.openFile({ path: task.file });
       return;
     case ACTIONS.quickEdit:
@@ -900,6 +925,7 @@ async function onViewEvent(event: ViewEvent, ref: ViewRef, context: Context): Pr
         case ACTIONS.runWorktree:
         case ACTIONS.variants:
         case ACTIONS.edit:
+        case ACTIONS.openViewer:
         case ACTIONS.quickEdit:
           if (ui.selected !== null) await taskAction(open, root, event.action, ui.selected, context);
           return;
@@ -907,14 +933,15 @@ async function onViewEvent(event: ViewEvent, ref: ViewRef, context: Context): Pr
       return;
     }
     if (event.kind === "select" && event.action === ACTIONS.section) {
-      // Only the scroll changes: the select already shows the chip that was clicked.
       const state = viewState(open.ref.view, root);
       const title = sectionTitle(state.planText, event.value);
       if (title === null) return;
       ui.section = title;
       const next = { ...state, section: title };
       remember(open, next);
-      patchOpen(open, context, [patch.replace(planScroll(next))]);
+      // The select too: the app does not move its highlight by itself.
+      const select = sectionSelect(next);
+      patchOpen(open, context, select === null ? [patch.replace(planScroll(next))] : [patch.replace(select), patch.replace(planScroll(next))]);
       return;
     }
     if (event.kind === "select" && event.action === ACTIONS.filter) {

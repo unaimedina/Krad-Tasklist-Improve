@@ -9,6 +9,7 @@ export const ACTIONS = {
   runWorktree: "run-worktree", // run the task in a new git worktree
   variants: "variants",        // compare agents on this task with Krad variants
   edit: "edit",                // open the plan file in Krad's editor
+  openViewer: "open-viewer",   // open the plan file in Krad, to read it in its Markdown preview
   quickEdit: "quick-edit",     // edit the plan with a prompt: an agent changes the Markdown
   setStatus: "set-status",     // "Change status" button: the app's picker chooses the status
   filter: "filter",            // select change of the task list filter
@@ -502,8 +503,9 @@ export function planBody(text: string): string {
 
 /** One part of a plan: the text before its first "## " heading ("Overview"), or one "## " section. */
 export interface PlanSection {
-  title: string; // the heading's text, code ticks dropped
-  text: string;  // the section's Markdown without its heading line
+  title: string;          // the heading's text, code ticks dropped
+  heading: string | null; // the heading line as written ("## `Done` criteria"); null for Overview
+  text: string;           // the section's Markdown without its heading line
 }
 
 /**
@@ -523,11 +525,12 @@ const OVERVIEW = "Overview";
 export function planSections(text: string): PlanSection[] {
   const sections: PlanSection[] = [];
   let title = OVERVIEW;
+  let headingLine: string | null = null;
   let lines: string[] = [];
   let fence: string | null = null;
   const flush = () => {
     const body = lines.join("\n").replace(/^(\s*\r?\n)+/, "").replace(/\s+$/, "");
-    if (body || title !== OVERVIEW) sections.push({ title, text: body });
+    if (body || headingLine !== null) sections.push({ title, heading: headingLine, text: body });
   };
   for (const line of planBody(text).split("\n")) {
     const marker = /^[ \t]*(```|~~~)/.exec(line)?.[1];
@@ -536,6 +539,7 @@ export function planSections(text: string): PlanSection[] {
     if (heading) {
       flush();
       title = heading[1]!.replace(/`/g, "").trim();
+      headingLine = line.replace(/\s+$/, "");
       lines = [];
     } else {
       lines.push(line);
@@ -550,8 +554,57 @@ export function planSections(text: string): PlanSection[] {
  * has it, else the first (the default: the whole plan is the heaviest Markdown to render).
  */
 function shownSection(state: TabState, sections: PlanSection[]): PlanSection | null {
-  if (state.section === WHOLE_PLAN && state.planText !== null) return { title: WHOLE_PLAN, text: planBody(state.planText) };
+  if (state.section === WHOLE_PLAN && state.planText !== null) {
+    return { title: WHOLE_PLAN, heading: null, text: planBody(state.planText) };
+  }
   return sections.find((s) => s.title === state.section) ?? sections[0] ?? null;
+}
+
+/** One Markdown node of the plan scroll: its key and its text. */
+export interface PlanPart {
+  key: string;
+  text: string;
+}
+
+/** Key of the one Markdown node of the plan scroll. */
+export const PLAN_MD = "plan-md";
+
+/**
+ * The Markdown the plan scroll shows: one section's text without its heading (the select names
+ * it), or with All the whole plan (planBody: no H1, no ## Status). A file that cannot be read or a
+ * section with no text says so in Markdown too, so the scroll's content is always one Markdown node.
+ */
+export function planMarkdown(state: TabState): string {
+  if (state.planText === null) return "_Cannot read the plan file._";
+  if (state.section === WHOLE_PLAN) return planBody(state.planText) || "_Nothing written here yet._";
+  const shown = shownSection(state, planSections(state.planText));
+  return shown === null || shown.text === "" ? "_Nothing written here yet._" : shown.text;
+}
+
+/**
+ * The Markdown nodes of the plan scroll: always exactly one. Krad renders a column scroll whose
+ * only child is one Markdown node as a natively scrolling, lazily laid-out text view (like Notes);
+ * a scroll with several children only gets caching. So the whole plan is one node too, and a data
+ * refresh replaces that one node when its text changed.
+ */
+export function planParts(state: TabState): PlanPart[] {
+  return [{ key: PLAN_MD, text: planMarkdown(state) }];
+}
+
+/** The node of one plan part. */
+export function planPartNode(part: PlanPart): Node {
+  return ui.markdown(part.key, part.text);
+}
+
+/**
+ * The plan pane's outline: the section titles and the one shown. While it is unchanged, a data
+ * refresh only replaces the plan parts whose text changed; otherwise it replaces the plan pane.
+ */
+export function planOutline(state: TabState): string {
+  if (state.planText === null) return "";
+  const sections = planSections(state.planText);
+  const shown = shownSection(state, sections);
+  return JSON.stringify([sections.map((s) => s.title), shown?.title ?? ""]);
 }
 
 /** Option value of section i (titles may repeat, values may not). */
@@ -639,6 +692,7 @@ export function detailTop(state: TabState, task: Task): Node {
     }),
     ui.button("detail-variants", ACTIONS.variants, { label: "Compare agents", icon: "exchange", variant: "ghost" }),
     iconButton("detail-edit", ACTIONS.edit, "note", "Edit in editor"),
+    iconButton("detail-open-viewer", ACTIONS.openViewer, "open-external", "Open in Krad's viewer"),
     iconButton("detail-quick-edit", ACTIONS.quickEdit, "magic", "Edit with a prompt"),
   ]);
 
@@ -684,23 +738,15 @@ export function detailTop(state: TabState, task: Task): Node {
 
 /** The scroll with the shown section's Markdown: what a section switch patches. */
 export function planScroll(state: TabState): Node {
-  let child: Node;
-  if (state.planText === null) {
-    child = ui.text("detail-unreadable", "Cannot read the plan file.", { size: "sm", color: "text_muted" });
-  } else {
-    const section = shownSection(state, planSections(state.planText));
-    child =
-      section === null || section.text === ""
-        ? ui.text("plan-empty", "Nothing written here yet.", { size: "sm", color: "text_muted" })
-        : ui.markdown("plan-md", section.text);
-  }
+  // Exactly one child, a Markdown node: Krad's fast path for long text (see planParts). Anything
+  // else the plan pane shows (the section select) sits outside the scroll.
   // Style has a single padding for all sides; xs keeps the scrollbar off the text.
   return {
     key: KEYS.planScroll,
     type: "scroll",
     direction: "column",
     style: { height: "fill", padding: "xs" },
-    children: [child],
+    children: planParts(state).map(planPartNode),
   };
 }
 
@@ -734,9 +780,7 @@ export function planPane(state: TabState): Node {
  */
 export function planSignature(state: TabState): string {
   if (state.planText === null) return "";
-  const sections = planSections(state.planText);
-  const shown = shownSection(state, sections);
-  return JSON.stringify([sections.map((s) => s.title), shown?.title ?? "", shown?.text ?? ""]);
+  return JSON.stringify([planOutline(state), planParts(state)]);
 }
 
 export function taskDetail(state: TabState): Node {
