@@ -292,3 +292,38 @@ export function tasklistView(state: TabState): Node {
   );
   return ui.column(KEYS.root, children, { gap: "md", padding: "md" });
 }
+
+/** Action of the sidebar's "Open Tasklist" button. */
+export const SIDEBAR_ACTIONS = {
+  openTab: "open-tab",
+  select: ACTIONS.select, // item action on a task row: open the tab with that task selected
+} as const;
+
+/**
+ * The "Tasks" sidebar view: a permanent entry point to the Tasklist tab.
+ * `state` is null when no group is open.
+ */
+export function sidebarView(state: TabState | null): Node {
+  const open = ui.button("sidebar-open", SIDEBAR_ACTIONS.openTab, {
+    label: "Open Tasklist",
+    icon: "tasks",
+    variant: "primary",
+  });
+  const children: Node[] = [open];
+  if (state === null) {
+    children.push(ui.text(KEYS.summary, "Open a group to see its tasks.", { color: "text_muted", wrap: "wrap" }));
+  } else {
+    children.push(summary(state));
+    if (state.set.dir !== null) {
+      const items = taskItems(state).map(
+        (item): TreeItem => ({
+          ...item,
+          actions: [{ action: SIDEBAR_ACTIONS.select, label: "Open", icon: "search" }],
+          menu: [],
+        }),
+      );
+      children.push(ui.tree(KEYS.tasks, items));
+    }
+  }
+  return ui.column(KEYS.root, children, { gap: "sm", padding: "sm" });
+}

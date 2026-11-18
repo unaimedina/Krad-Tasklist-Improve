@@ -294,9 +294,40 @@ function tasklistView(state) {
   );
   return ui.column(KEYS.root, children, { gap: "md", padding: "md" });
 }
+var SIDEBAR_ACTIONS = {
+  openTab: "open-tab",
+  select: ACTIONS.select
+  // item action on a task row: open the tab with that task selected
+};
+function sidebarView(state) {
+  const open = ui.button("sidebar-open", SIDEBAR_ACTIONS.openTab, {
+    label: "Open Tasklist",
+    icon: "tasks",
+    variant: "primary"
+  });
+  const children = [open];
+  if (state === null) {
+    children.push(ui.text(KEYS.summary, "Open a group to see its tasks.", { color: "text_muted", wrap: "wrap" }));
+  } else {
+    children.push(summary(state));
+    if (state.set.dir !== null) {
+      const items = taskItems(state).map(
+        (item) => ({
+          ...item,
+          actions: [{ action: SIDEBAR_ACTIONS.select, label: "Open", icon: "search" }],
+          menu: []
+        })
+      );
+      children.push(ui.tree(KEYS.tasks, items));
+    }
+  }
+  return ui.column(KEYS.root, children, { gap: "sm", padding: "sm" });
+}
 export {
   ACTIONS,
   KEYS,
+  SIDEBAR_ACTIONS,
+  sidebarView,
   statusBadge,
   summary,
   taskDetail,

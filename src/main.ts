@@ -20,7 +20,7 @@ import { hasStopped, isLive, nextLaunches, sessionOver, verdictFor } from "./sch
 import type { Harness, PlanSet, RunMode, RunRecord, Task, TaskStatus } from "./types.js";
 import { HARNESSES, TASK_STATUSES } from "./types.js";
 import type { SessionInfo, TabState } from "./view.js";
-import { ACTIONS, tasklistView } from "./view.js";
+import { ACTIONS, SIDEBAR_ACTIONS, sidebarView, tasklistView } from "./view.js";
 
 const run = promisify(execFile);
 
@@ -170,16 +170,75 @@ function tabState(root: string): TabState {
 
 function refreshTab(root: string, context: Context): void {
   const key = tabKey(root);
-  if (key === undefined) return;
+  if (key === undefined) {
+    if (sidebarRoot !== null && samePath(sidebarRoot, root)) refreshSidebar(context);
+    return;
+  }
   try {
     context.app.patchView({ view: "tasklist", instance: key }, [patch.replace(tasklistView(tabState(key)))]);
   } catch (error) {
     context.app.log("warn", `refresh of ${key} failed: ${failure(error)}`);
   }
+  if (sidebarRoot !== null && samePath(sidebarRoot, root)) refreshSidebar(context);
 }
 
 function refreshAll(context: Context): void {
   for (const root of tabs.keys()) refreshTab(root, context);
+  refreshSidebar(context);
+}
+
+// ---------------------------------------------------------------------------
+// Tasks sidebar view
+// ---------------------------------------------------------------------------
+
+/** Whether the sidebar view has been rendered and not closed since. */
+let sidebarOpen = false;
+/** The group the sidebar view shows, from its last render. */
+let sidebarRoot: string | null = null;
+
+/** The group the sidebar shows: the first one whose folder has plans/, else the first one. */
+async function sidebarGroup(context: Context): Promise<string | null> {
+  const groups = (await context.app.workspaceContext()).groups;
+  const withPlans = groups.find((g) => findPlansDir(g.root) !== null);
+  return (withPlans ?? groups[0])?.root ?? null;
+}
+
+async function renderSidebar(context: Context): Promise<ReturnType<typeof sidebarView>> {
+  sidebarRoot = await sidebarGroup(context);
+  sidebarOpen = true;
+  return sidebarView(sidebarRoot === null ? null : tabState(sidebarRoot));
+}
+
+function refreshSidebar(context: Context): void {
+  if (!sidebarOpen) return;
+  void renderSidebar(context)
+    .then((node) => context.app.patchView({ view: "tasks" }, [patch.replace(node)]))
+    .catch((error) => context.app.log("warn", `refresh of the Tasks view failed: ${failure(error)}`));
+}
+
+/** Opens the Tasklist tab of a root, optionally with a task selected. */
+async function openTab(root: string, context: Context, selected: string | null = null): Promise<void> {
+  if (selected !== null) {
+    const key = tabKey(root) ?? root;
+    tabs.set(key, { selected, editing: false });
+  }
+  await context.app.openView({ view: "tasklist", instance: tabKey(root) ?? root, title: `Tasklist · ${basename(root)}` });
+  if (selected !== null) refreshTab(root, context);
+}
+
+async function onSidebarEvent(event: ViewEvent, context: Context): Promise<void> {
+  try {
+    const root = sidebarRoot ?? (await sidebarGroup(context));
+    if (event.kind === "click" && event.action === SIDEBAR_ACTIONS.openTab) {
+      if (root === null) return await withRoot(null, context, (r) => openTab(r, context));
+      return await openTab(root, context);
+    }
+    if (event.kind === "item_action" && event.action === SIDEBAR_ACTIONS.select && root !== null) {
+      return await openTab(root, context, event.item);
+    }
+  } catch (error) {
+    context.app.toast(failure(error), "error");
+  }
 }
 
 function findTask(root: string, id: string): { set: PlanSet; task: Task } | null {
@@ -817,13 +876,12 @@ createExtension({
       const dir = findPlansDir(root);
       if (dir !== null && isInside(event.path, dir)) refreshTab(root, context);
     }
+    // The sidebar follows its group's plans, and a new plans/ folder may change its group.
+    if (/[\\/]plans[\\/]/i.test(event.path)) refreshSidebar(context);
   },
 
   commands: {
-    "tasklist.open": (target, context) =>
-      withRoot(target, context, (root) =>
-        context.app.openView({ view: "tasklist", instance: root, title: `Tasklist · ${basename(root)}` }),
-      ),
+    "tasklist.open": (target, context) => withRoot(target, context, (root) => openTab(root, context)),
     "tasklist.refresh": (_target, context) => refreshAll(context),
     "tasklist.new-task": (target, context) => withRoot(target, context, (root) => newTask(root, context)),
     "tasklist.generate": (target, context) => withRoot(target, context, (root) => generate(root, context)),
@@ -835,6 +893,17 @@ createExtension({
   },
 
   views: {
+    tasks: {
+      render(_view, context) {
+        return renderSidebar(context);
+      },
+      onEvent(event, _view, context) {
+        return onSidebarEvent(event, context);
+      },
+      onClose() {
+        sidebarOpen = false;
+      },
+    },
     tasklist: {
       render(view) {
         const root = view.instance ?? "";

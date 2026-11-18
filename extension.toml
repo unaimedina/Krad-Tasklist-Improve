@@ -79,6 +79,12 @@ title = "Tasklist"
 zone = "file_tab"
 icon = "tasks"
 
+[[contributes.view]]
+id = "tasks"
+title = "Tasks"
+zone = "sidebar"
+icon = "tasks"
+
 [[contributes.setting]]
 key = "harness"
 title = "Agent"

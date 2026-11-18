@@ -104,6 +104,39 @@ test("the tasklist view lists the fixture tasks", async (t) => {
   for (const id of ["001", "002", "003", "004", "005", "007"]) assert.match(keys, new RegExp(`"key":"${id}"`), id);
 });
 
+test("the Tasks sidebar view has an Open Tasklist button and lists the fixture tasks", async (t) => {
+  const dir = fixtureRoot();
+  const { child, request } = startProgram([{ id: "g", name: "g", root: dir }]);
+  t.after(() => {
+    child.kill();
+    rmSync(dir, { recursive: true, force: true });
+  });
+  await request("initialize", INIT);
+  const reply = await request("view/render", { view: "tasks" });
+  const text = JSON.stringify(reply.result);
+  assert.ok(reply.result, JSON.stringify(reply));
+  const button = findNode(reply.result, "sidebar-open");
+  assert.equal(button?.type, "button", text.slice(0, 500));
+  assert.equal(button?.action, "open-tab");
+  const tree = findNode(reply.result, "tasks");
+  assert.equal(tree?.type, "tree", text.slice(0, 500));
+  const keys = JSON.stringify(tree);
+  for (const id of ["001", "002", "003", "004", "005", "007"]) assert.match(keys, new RegExp(`"key":"${id}"`), id);
+});
+
+test("the Tasks sidebar view without a plans folder still offers Open Tasklist", async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "tasklist-"));
+  const { child, request } = startProgram([{ id: "g", name: "g", root: dir }]);
+  t.after(() => {
+    child.kill();
+    rmSync(dir, { recursive: true, force: true });
+  });
+  await request("initialize", INIT);
+  const reply = await request("view/render", { view: "tasks" });
+  assert.equal(findNode(reply.result, "sidebar-open")?.action, "open-tab", JSON.stringify(reply));
+  assert.equal(findNode(reply.result, "tasks"), null);
+});
+
 test("tasklist_list lists the tasks of the given root", async (t) => {
   const dir = fixtureRoot();
   const { child, request } = startProgram([{ id: "g", name: "g", root: dir }]);

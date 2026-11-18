@@ -1255,6 +1255,35 @@ function tasklistView(state) {
   );
   return ui.column(KEYS.root, children, { gap: "md", padding: "md" });
 }
+var SIDEBAR_ACTIONS = {
+  openTab: "open-tab",
+  select: ACTIONS.select
+  // item action on a task row: open the tab with that task selected
+};
+function sidebarView(state) {
+  const open = ui.button("sidebar-open", SIDEBAR_ACTIONS.openTab, {
+    label: "Open Tasklist",
+    icon: "tasks",
+    variant: "primary"
+  });
+  const children = [open];
+  if (state === null) {
+    children.push(ui.text(KEYS.summary, "Open a group to see its tasks.", { color: "text_muted", wrap: "wrap" }));
+  } else {
+    children.push(summary(state));
+    if (state.set.dir !== null) {
+      const items = taskItems(state).map(
+        (item) => ({
+          ...item,
+          actions: [{ action: SIDEBAR_ACTIONS.select, label: "Open", icon: "search" }],
+          menu: []
+        })
+      );
+      children.push(ui.tree(KEYS.tasks, items));
+    }
+  }
+  return ui.column(KEYS.root, children, { gap: "sm", padding: "sm" });
+}
 
 // src/main.ts
 var run2 = promisify2(execFile2);
@@ -1354,15 +1383,58 @@ function tabState(root) {
 }
 function refreshTab(root, context) {
   const key = tabKey(root);
-  if (key === void 0) return;
+  if (key === void 0) {
+    if (sidebarRoot !== null && samePath2(sidebarRoot, root)) refreshSidebar(context);
+    return;
+  }
   try {
     context.app.patchView({ view: "tasklist", instance: key }, [patch.replace(tasklistView(tabState(key)))]);
   } catch (error) {
     context.app.log("warn", `refresh of ${key} failed: ${failure(error)}`);
   }
+  if (sidebarRoot !== null && samePath2(sidebarRoot, root)) refreshSidebar(context);
 }
 function refreshAll(context) {
   for (const root of tabs.keys()) refreshTab(root, context);
+  refreshSidebar(context);
+}
+var sidebarOpen = false;
+var sidebarRoot = null;
+async function sidebarGroup(context) {
+  const groups = (await context.app.workspaceContext()).groups;
+  const withPlans = groups.find((g) => findPlansDir(g.root) !== null);
+  return (withPlans ?? groups[0])?.root ?? null;
+}
+async function renderSidebar(context) {
+  sidebarRoot = await sidebarGroup(context);
+  sidebarOpen = true;
+  return sidebarView(sidebarRoot === null ? null : tabState(sidebarRoot));
+}
+function refreshSidebar(context) {
+  if (!sidebarOpen) return;
+  void renderSidebar(context).then((node2) => context.app.patchView({ view: "tasks" }, [patch.replace(node2)])).catch((error) => context.app.log("warn", `refresh of the Tasks view failed: ${failure(error)}`));
+}
+async function openTab(root, context, selected = null) {
+  if (selected !== null) {
+    const key = tabKey(root) ?? root;
+    tabs.set(key, { selected, editing: false });
+  }
+  await context.app.openView({ view: "tasklist", instance: tabKey(root) ?? root, title: `Tasklist \xB7 ${basename2(root)}` });
+  if (selected !== null) refreshTab(root, context);
+}
+async function onSidebarEvent(event, context) {
+  try {
+    const root = sidebarRoot ?? await sidebarGroup(context);
+    if (event.kind === "click" && event.action === SIDEBAR_ACTIONS.openTab) {
+      if (root === null) return await withRoot(null, context, (r) => openTab(r, context));
+      return await openTab(root, context);
+    }
+    if (event.kind === "item_action" && event.action === SIDEBAR_ACTIONS.select && root !== null) {
+      return await openTab(root, context, event.item);
+    }
+  } catch (error) {
+    context.app.toast(failure(error), "error");
+  }
 }
 function findTask(root, id) {
   const set = loadPlanSet(root);
@@ -1930,13 +2002,10 @@ createExtension({
       const dir = findPlansDir(root);
       if (dir !== null && isInside(event.path, dir)) refreshTab(root, context);
     }
+    if (/[\\/]plans[\\/]/i.test(event.path)) refreshSidebar(context);
   },
   commands: {
-    "tasklist.open": (target, context) => withRoot(
-      target,
-      context,
-      (root) => context.app.openView({ view: "tasklist", instance: root, title: `Tasklist \xB7 ${basename2(root)}` })
-    ),
+    "tasklist.open": (target, context) => withRoot(target, context, (root) => openTab(root, context)),
     "tasklist.refresh": (_target, context) => refreshAll(context),
     "tasklist.new-task": (target, context) => withRoot(target, context, (root) => newTask(root, context)),
     "tasklist.generate": (target, context) => withRoot(target, context, (root) => generate(root, context)),
@@ -1946,6 +2015,17 @@ createExtension({
     "tasklist.stop": (target, context) => withRoot(target, context, (root) => stopAutoRun(root, context))
   },
   views: {
+    tasks: {
+      render(_view, context) {
+        return renderSidebar(context);
+      },
+      onEvent(event, _view, context) {
+        return onSidebarEvent(event, context);
+      },
+      onClose() {
+        sidebarOpen = false;
+      }
+    },
     tasklist: {
       render(view) {
         const root = view.instance ?? "";

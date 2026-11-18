@@ -10,7 +10,7 @@ A Krad ADE extension that turns the implementation plans written by the
   ready tasks in dependency order.
 
 The extension activates in groups that contain `plans/README.md`. Open it with **Tasklist: Open**
-(`Ctrl+Alt+Shift+T`, `Cmd+Alt+Shift+T` on macOS), the titlebar button, or the group's context menu.
+(`Ctrl+Alt+Shift+T`, `Cmd+Alt+Shift+T` on macOS), the **Tasks** sidebar view, the titlebar button, or the group's context menu.
 
 ## Install
 
@@ -22,7 +22,8 @@ The extension activates in groups that contain `plans/README.md`. Open it with *
 
 ## Use
 
-- **Open the tab**: the **Tasklist** titlebar button, the **Tasklist: Open** command, the group's
+- **Open the tab**: **Open Tasklist** in the **Tasks** sidebar view (which also lists the tasks;
+  click one to open the tab on it), the **Tasklist** titlebar button, the **Tasklist: Open** command, the group's
   context menu (or the context menu of `plans/README.md`), or `Ctrl+Alt+Shift+T`. One tab per group.
 - **Write plans with `/improve`**: **Write plans** opens the chosen agent with `/improve <what you
   typed>` (empty = full audit; or `plan <what to build>`, `quick`, `security`, `next` ...).
