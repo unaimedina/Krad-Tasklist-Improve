@@ -1,44 +1,78 @@
-// Opening an agent as a native Krad chat (the app's `chat/open` request).
+// Opening an agent as a native Krad chat: the extension opens a utilities terminal that runs
+// dist/spawn-chat.js, which calls `krad spawn` from inside Krad (see spawn-chat.ts), and reads the
+// new chat's bus terminal id back from a result file.
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { App } from "@krad-ade/extension";
-import { INVALID_PARAMS, METHOD_NOT_FOUND, RpcError } from "@krad-ade/extension";
+import type { KradCli } from "./runner.js";
+import type { SpawnOutcome, SpawnRequest } from "./spawn-chat.js";
 import type { Harness } from "./types.js";
 
-/** Params of `chat/open`. worktree is the name of a new git worktree Krad creates as <repo>.worktrees/<name>. */
-export interface OpenChatParams {
-  task: string;
-  agent?: Harness | null;
-  title?: string | null;
-  worktree?: string | null;
-  group_root?: string | null;
+export interface ChatSpec {
+  agent: Harness;
+  task: string;              // the full prompt, as the user would type it
+  title: string;             // for messages
+  worktree?: string | null;  // a new worktree Krad creates as <repo>.worktrees/<name>
 }
 
-export interface OpenChatResult {
-  terminal: number;
-  session: number;
+export interface ChatDeps {
+  app: App;
+  extensionFolder: string;
+  krad: KradCli;
+  /** How long to wait for the helper's result (ms). */
+  timeoutMs?: number;
+  pollMs?: number;
 }
 
-/** Thrown when the app has no `chat/open` (an older Krad): the caller should stop asking. */
-export class ChatsUnsupported extends Error {}
+export const CHAT_TIMEOUT_MS = 20_000;
+
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+function readOutcome(file: string): SpawnOutcome | null {
+  if (!existsSync(file)) return null;
+  try {
+    const raw = JSON.parse(readFileSync(file, "utf8")) as Record<string, unknown>;
+    if (raw.ok === true && typeof raw.terminal === "number") return { ok: true, terminal: raw.terminal };
+    return { ok: false, error: typeof raw.error === "string" ? raw.error : JSON.stringify(raw) };
+  } catch {
+    return null; // not fully written yet
+  }
+}
 
 /**
- * Asks the app to open a chat. SDK 0.4.0 has no typed method for `chat/open`, so this goes through
- * the generic request. Throws ChatsUnsupported when the app does not know the method (or its
- * params, or answers with something that is not a chat); other errors are rethrown as they are.
+ * Starts a native chat in the group of the terminal opened at root. Resolves with the chat's bus
+ * terminal id; rejects with the reason (krad's error text, or a timeout) when no chat started.
  */
-export async function openChat(app: App, params: OpenChatParams): Promise<OpenChatResult> {
-  const request = app.request as unknown as (method: string, params: unknown) => Promise<unknown>;
-  let result: unknown;
+export async function openChat(root: string, spec: ChatSpec, deps: ChatDeps): Promise<number> {
+  const dir = mkdtempSync(join(tmpdir(), "tasklist-chat-"));
   try {
-    result = await request.call(app, "chat/open", params);
-  } catch (error) {
-    if (error instanceof RpcError && (error.code === METHOD_NOT_FOUND || error.code === INVALID_PARAMS)) {
-      throw new ChatsUnsupported(`chat/open is not supported (${error.code}: ${error.message})`);
+    const out = join(dir, "result.json");
+    const request: SpawnRequest = {
+      krad: deps.krad.program,
+      kradArgs: deps.krad.prefixArgs,
+      agent: spec.agent,
+      worktree: spec.worktree ?? null,
+      task: spec.task,
+      out,
+    };
+    const requestFile = join(dir, "request.json");
+    writeFileSync(requestFile, JSON.stringify(request));
+    await deps.app.openTerminal({
+      title: "Starting chat…",
+      cwd: root,
+      zone: "utilities",
+      command: { program: process.execPath, args: [join(deps.extensionFolder, "dist", "spawn-chat.js"), requestFile] },
+    });
+    const deadline = Date.now() + (deps.timeoutMs ?? CHAT_TIMEOUT_MS);
+    for (;;) {
+      const outcome = readOutcome(out);
+      if (outcome?.ok) return outcome.terminal;
+      if (outcome) throw new Error(outcome.error);
+      if (Date.now() >= deadline) throw new Error(`no answer from krad spawn within ${Math.round((deps.timeoutMs ?? CHAT_TIMEOUT_MS) / 1000)} s`);
+      await sleep(deps.pollMs ?? 200);
     }
-    throw error;
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
   }
-  const r = (result ?? {}) as Record<string, unknown>;
-  if (typeof r.terminal !== "number") {
-    throw new ChatsUnsupported(`chat/open answered without a terminal id: ${JSON.stringify(result)}`);
-  }
-  return { terminal: r.terminal, session: typeof r.session === "number" ? r.session : -1 };
 }

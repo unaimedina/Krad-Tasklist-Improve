@@ -106,7 +106,7 @@ export function worktreeName(task: Task): string {
   return `${task.id}-${task.slug}`;
 }
 
-/** <root>.worktrees/<name>: where both Krad's chat/open and createWorktree put a worktree. */
+/** <root>.worktrees/<name>: where both krad spawn --worktree and createWorktree put a worktree. */
 export function worktreePath(root: string, name: string): string {
   return join(`${root.replace(/[\\/]+$/, "")}.worktrees`, name);
 }

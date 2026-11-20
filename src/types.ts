@@ -38,7 +38,7 @@ export type RunMode = "here" | "worktree";
 export interface RunRecord {
   taskId: string;
   root: string;              // group root the task belongs to
-  terminal: number;          // id returned by app.openTerminal
+  terminal: number;          // bus terminal id: the chat from krad spawn, or app.openTerminal's id
   harness: Harness;
   mode: RunMode;
   cwd: string;               // where the agent works (root, or the worktree path)

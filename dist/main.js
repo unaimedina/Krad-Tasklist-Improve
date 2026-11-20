@@ -90,7 +90,6 @@ function contentLength(header2) {
 
 // node_modules/@krad-ade/extension/dist/rpc.js
 var METHOD_NOT_FOUND = -32601;
-var INVALID_PARAMS = -32602;
 var REQUEST_FAILED = -32803;
 var JSONRPC = "2.0";
 var RpcError = class extends Error {
@@ -822,30 +821,58 @@ ${folderStamp(dir)}`;
 };
 
 // src/chat.ts
-var ChatsUnsupported = class extends Error {
-};
-async function openChat(app, params) {
-  const request = app.request;
-  let result;
+import { existsSync as existsSync2, mkdtempSync, readFileSync as readFileSync3, rmSync, writeFileSync as writeFileSync2 } from "node:fs";
+import { tmpdir } from "node:os";
+import { join as join3 } from "node:path";
+var CHAT_TIMEOUT_MS = 2e4;
+var sleep = (ms) => new Promise((resolve4) => setTimeout(resolve4, ms));
+function readOutcome(file) {
+  if (!existsSync2(file)) return null;
   try {
-    result = await request.call(app, "chat/open", params);
-  } catch (error) {
-    if (error instanceof RpcError && (error.code === METHOD_NOT_FOUND || error.code === INVALID_PARAMS)) {
-      throw new ChatsUnsupported(`chat/open is not supported (${error.code}: ${error.message})`);
+    const raw = JSON.parse(readFileSync3(file, "utf8"));
+    if (raw.ok === true && typeof raw.terminal === "number") return { ok: true, terminal: raw.terminal };
+    return { ok: false, error: typeof raw.error === "string" ? raw.error : JSON.stringify(raw) };
+  } catch {
+    return null;
+  }
+}
+async function openChat(root, spec, deps) {
+  const dir = mkdtempSync(join3(tmpdir(), "tasklist-chat-"));
+  try {
+    const out = join3(dir, "result.json");
+    const request = {
+      krad: deps.krad.program,
+      kradArgs: deps.krad.prefixArgs,
+      agent: spec.agent,
+      worktree: spec.worktree ?? null,
+      task: spec.task,
+      out
+    };
+    const requestFile = join3(dir, "request.json");
+    writeFileSync2(requestFile, JSON.stringify(request));
+    await deps.app.openTerminal({
+      title: "Starting chat\u2026",
+      cwd: root,
+      zone: "utilities",
+      command: { program: process.execPath, args: [join3(deps.extensionFolder, "dist", "spawn-chat.js"), requestFile] }
+    });
+    const deadline = Date.now() + (deps.timeoutMs ?? CHAT_TIMEOUT_MS);
+    for (; ; ) {
+      const outcome = readOutcome(out);
+      if (outcome?.ok) return outcome.terminal;
+      if (outcome) throw new Error(outcome.error);
+      if (Date.now() >= deadline) throw new Error(`no answer from krad spawn within ${Math.round((deps.timeoutMs ?? CHAT_TIMEOUT_MS) / 1e3)} s`);
+      await sleep(deps.pollMs ?? 200);
     }
-    throw error;
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
   }
-  const r = result ?? {};
-  if (typeof r.terminal !== "number") {
-    throw new ChatsUnsupported(`chat/open answered without a terminal id: ${JSON.stringify(result)}`);
-  }
-  return { terminal: r.terminal, session: typeof r.session === "number" ? r.session : -1 };
 }
 
 // src/runner.ts
 import { execFile, spawn } from "node:child_process";
-import { existsSync as existsSync2 } from "node:fs";
-import { join as join3, resolve as resolve2 } from "node:path";
+import { existsSync as existsSync3 } from "node:fs";
+import { join as join4, resolve as resolve2 } from "node:path";
 import { promisify } from "node:util";
 var run = promisify(execFile);
 var OUTPUT_LIMIT = 16 * 1024 * 1024;
@@ -888,7 +915,7 @@ function worktreeName(task) {
   return `${task.id}-${task.slug}`;
 }
 function worktreePath(root, name) {
-  return join3(`${root.replace(/[\\/]+$/, "")}.worktrees`, name);
+  return join4(`${root.replace(/[\\/]+$/, "")}.worktrees`, name);
 }
 function worktreeFor(root, task) {
   const name = worktreeName(task);
@@ -923,7 +950,7 @@ async function branchExists(root, branch, git) {
 }
 async function createWorktree(root, task, git = "git") {
   const target = worktreeFor(root, task);
-  if (existsSync2(target.path)) {
+  if (existsSync3(target.path)) {
     const listing = await gitOutput(git, ["-C", root, "worktree", "list", "--porcelain"]);
     const known = listing.split(/\r?\n/).filter((line) => line.startsWith("worktree ")).map((line) => line.slice("worktree ".length));
     if (known.some((path) => samePath(path, target.path))) return target;
@@ -961,7 +988,7 @@ async function findKrad(setting) {
   if (setting.trim()) candidates.push(setting.trim());
   candidates.push("krad", "krad-ade-agents");
   if (process.platform === "win32" && process.env.LOCALAPPDATA) {
-    candidates.push(join3(process.env.LOCALAPPDATA, "Programs", "Krad ADE", "krad.exe"));
+    candidates.push(join4(process.env.LOCALAPPDATA, "Programs", "Krad ADE", "krad.exe"));
   }
   for (const program of [...new Set(candidates)]) {
     try {
@@ -1619,6 +1646,7 @@ function detailTop(state, task) {
         { label: "Where", value: run3.cwd },
         { label: "Branch", value: run3.branch ?? "\u2014" },
         { label: "State", value: run3.state },
+        { label: "Terminal", value: String(run3.terminal) },
         { label: "Started", value: run3.startedAt }
       ])
     );
@@ -2020,25 +2048,24 @@ async function plansDirty(root) {
     return false;
   }
 }
-var chatsAvailable = true;
+var chatKradMissingLogged = false;
 async function tryChat(launch, worktree, context) {
-  if (!chatsAvailable) return null;
-  try {
-    const chat = await openChat(context.app, {
-      task: launch.prompt,
-      agent: launch.harness,
-      title: launch.title,
-      group_root: launch.root,
-      worktree
-    });
-    return chat.terminal;
-  } catch (error) {
-    if (error instanceof ChatsUnsupported) {
-      chatsAvailable = false;
-      context.app.log("info", `Krad has no native chats here (${error.message}); agents open in terminals`);
-    } else {
-      context.app.log("warn", `could not open a chat (${failure(error)}); opening a terminal instead`);
+  kradCli ??= await findKrad(current.kradPath);
+  if (kradCli === null) {
+    if (!chatKradMissingLogged) {
+      chatKradMissingLogged = true;
+      context.app.log("info", "krad CLI not found: agents open in terminals instead of chats");
     }
+    return null;
+  }
+  try {
+    return await openChat(
+      launch.root,
+      { agent: launch.harness, task: launch.prompt, title: launch.title, worktree },
+      { app: context.app, extensionFolder: context.init.extension_folder, krad: kradCli }
+    );
+  } catch (error) {
+    context.app.log("warn", `could not open a chat for ${launch.title} (${failure(error)}); opening a terminal instead`);
     return null;
   }
 }
@@ -2691,6 +2718,7 @@ createExtension({
     if (current.kradPath !== before) {
       kradCli = null;
       kradMissingWarned = false;
+      chatKradMissingLogged = false;
     }
     refreshAll(context);
   },

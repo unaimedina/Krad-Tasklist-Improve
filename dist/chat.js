@@ -1,38 +1,52 @@
-// node_modules/@krad-ade/extension/dist/framing.js
-var MAX_FRAME_BYTES = 64 * 1024 * 1024;
-
-// node_modules/@krad-ade/extension/dist/rpc.js
-var METHOD_NOT_FOUND = -32601;
-var INVALID_PARAMS = -32602;
-var RpcError = class extends Error {
-  code;
-  constructor(code, message) {
-    super(message);
-    this.code = code;
-  }
-};
-
 // src/chat.ts
-var ChatsUnsupported = class extends Error {
-};
-async function openChat(app, params) {
-  const request = app.request;
-  let result;
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+var CHAT_TIMEOUT_MS = 2e4;
+var sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+function readOutcome(file) {
+  if (!existsSync(file)) return null;
   try {
-    result = await request.call(app, "chat/open", params);
-  } catch (error) {
-    if (error instanceof RpcError && (error.code === METHOD_NOT_FOUND || error.code === INVALID_PARAMS)) {
-      throw new ChatsUnsupported(`chat/open is not supported (${error.code}: ${error.message})`);
+    const raw = JSON.parse(readFileSync(file, "utf8"));
+    if (raw.ok === true && typeof raw.terminal === "number") return { ok: true, terminal: raw.terminal };
+    return { ok: false, error: typeof raw.error === "string" ? raw.error : JSON.stringify(raw) };
+  } catch {
+    return null;
+  }
+}
+async function openChat(root, spec, deps) {
+  const dir = mkdtempSync(join(tmpdir(), "tasklist-chat-"));
+  try {
+    const out = join(dir, "result.json");
+    const request = {
+      krad: deps.krad.program,
+      kradArgs: deps.krad.prefixArgs,
+      agent: spec.agent,
+      worktree: spec.worktree ?? null,
+      task: spec.task,
+      out
+    };
+    const requestFile = join(dir, "request.json");
+    writeFileSync(requestFile, JSON.stringify(request));
+    await deps.app.openTerminal({
+      title: "Starting chat\u2026",
+      cwd: root,
+      zone: "utilities",
+      command: { program: process.execPath, args: [join(deps.extensionFolder, "dist", "spawn-chat.js"), requestFile] }
+    });
+    const deadline = Date.now() + (deps.timeoutMs ?? CHAT_TIMEOUT_MS);
+    for (; ; ) {
+      const outcome = readOutcome(out);
+      if (outcome?.ok) return outcome.terminal;
+      if (outcome) throw new Error(outcome.error);
+      if (Date.now() >= deadline) throw new Error(`no answer from krad spawn within ${Math.round((deps.timeoutMs ?? CHAT_TIMEOUT_MS) / 1e3)} s`);
+      await sleep(deps.pollMs ?? 200);
     }
-    throw error;
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
   }
-  const r = result ?? {};
-  if (typeof r.terminal !== "number") {
-    throw new ChatsUnsupported(`chat/open answered without a terminal id: ${JSON.stringify(result)}`);
-  }
-  return { terminal: r.terminal, session: typeof r.session === "number" ? r.session : -1 };
 }
 export {
-  ChatsUnsupported,
+  CHAT_TIMEOUT_MS,
   openChat
 };

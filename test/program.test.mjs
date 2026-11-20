@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { execFileSync, spawn } from "node:child_process";
 import { cpSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { encodeFrame, FrameDecoder } from "@krad-ade/extension";
 
@@ -17,12 +17,15 @@ const INIT = {
   features: ["views", "commands", "tools"],
 };
 
-/** An answer the fake app sends as a JSON-RPC error. */
-class AppError {
-  constructor(code, message) {
-    this.code = code;
-    this.message = message;
-  }
+/** A terminal/open request for the spawn-chat helper (the chat path), not an agent terminal. */
+const isChatHelper = (m) => m.method === "terminal/open" && /spawn-chat\.js$/.test(m.params.command?.args?.[0] ?? "");
+const agentTerminals = (requests) => requests.filter((m) => m.method === "terminal/open" && !isChatHelper(m));
+
+/** Plays the helper's part: writes its outcome to the out file of the request the program wrote. */
+function answerChat(message, outcome) {
+  const request = JSON.parse(readFileSync(message.params.command.args[1], "utf8"));
+  writeFileSync(request.out, JSON.stringify(outcome));
+  return request;
 }
 
 /** Spawn dist/main.js and talk framed JSON-RPC to it. */
@@ -43,10 +46,13 @@ function startProgram(groups = [], answers = {}) {
         // A request from the program to the app.
         appRequests.push(message);
         const answer = answers[message.method];
-        if (answer instanceof AppError) send({ id: message.id, error: { code: answer.code, message: answer.message } });
+        // By default the chat helper reports that no chat started, so agents fall back to terminals.
+        if (isChatHelper(message) && !answers.chat) {
+          answerChat(message, { ok: false, error: "no krad spawn in tests" });
+          send({ id: message.id, result: 900 });
+        } else if (isChatHelper(message)) send({ id: message.id, result: answers.chat(message) });
+        else if (typeof answer === "function") send({ id: message.id, result: answer(message) });
         else if (message.method in answers) send({ id: message.id, result: answer });
-        // An app without native chats, like Krad before chat/open.
-        else if (message.method === "chat/open") send({ id: message.id, error: { code: -32601, message: "chat/open" } });
         else if (message.method === "settings/get") send({ id: message.id, result: {} });
         else if (message.method === "workspace/context") send({ id: message.id, result: { groups } });
         else send({ id: message.id, result: {} });
@@ -386,7 +392,7 @@ test("Edit with a prompt asks what to change and starts the agent on that plan f
   await waitFor((m) => m.method === "window/toast" && /Editing plan 002/.test(m.params.message));
   const ask = appRequests.find((m) => m.method === "window/input");
   assert.equal(ask.params.title, "Edit plan 002 with claude");
-  const open = appRequests.find((m) => m.method === "terminal/open");
+  const [open] = agentTerminals(appRequests);
   assert.equal(open.params.cwd, dir);
   assert.equal(open.params.title, "edit 002 · claude");
   const command = JSON.stringify(open.params.command);
@@ -593,14 +599,22 @@ test("rows() serves the list from memory: it works with the plans folder gone", 
 });
 
 // ---------------------------------------------------------------------------
-// Native chats (chat/open) and the terminal fallback
+// Native chats (krad spawn through the spawn-chat helper) and the terminal fallback
 // ---------------------------------------------------------------------------
 
-test("Write plans with /improve opens a native chat with the /improve prompt, no terminal", async (t) => {
+/** krad-path = node: findKrad accepts it (`node --version`), so the chat path is always tried. */
+const KRAD_IS_NODE = { "settings/get": { "krad-path": process.execPath } };
+
+test("Write plans with /improve opens a chat through the spawn-chat helper, no agent terminal", async (t) => {
   const dir = fixtureRoot();
+  let chat = null;
   const { child, request, appRequests } = startProgram([{ id: "g", name: "g", root: dir }], {
+    ...KRAD_IS_NODE,
     "window/input": 'plan a "parser" & more',
-    "chat/open": { terminal: 7, session: 3 },
+    chat: (message) => {
+      chat = answerChat(message, { ok: true, terminal: 42 });
+      return 5;
+    },
   });
   t.after(() => {
     child.kill();
@@ -609,23 +623,31 @@ test("Write plans with /improve opens a native chat with the /improve prompt, no
   await request("initialize", INIT);
   const reply = await request("command/execute", { command: "tasklist.generate", target: { kind: "folder", path: dir } });
   assert.equal(reply.error, undefined, JSON.stringify(reply));
-  const chat = appRequests.find((m) => m.method === "chat/open");
-  assert.ok(chat, "chat/open was requested");
-  // A chat takes the prompt as it is: no cmd.exe quoting.
-  assert.equal(chat.params.task, '/improve plan a "parser" & more');
-  assert.equal(chat.params.agent, "claude");
-  assert.equal(chat.params.title, "improve");
-  assert.equal(chat.params.group_root, dir);
-  assert.equal(chat.params.worktree, null);
-  assert.equal(appRequests.filter((m) => m.method === "terminal/open").length, 0);
+  const helper = appRequests.find(isChatHelper);
+  assert.ok(helper, "the helper terminal was opened");
+  assert.equal(helper.params.title, "Starting chat…");
+  assert.equal(helper.params.zone, "utilities");
+  assert.equal(helper.params.cwd, dir);
+  assert.equal(helper.params.command.program, process.execPath);
+  assert.equal(helper.params.command.args[0], join(root, "dist", "spawn-chat.js"));
+  // The chat gets the prompt as it is: no cmd.exe quoting.
+  assert.equal(chat.task, '/improve plan a "parser" & more');
+  assert.equal(chat.agent, "claude");
+  assert.equal(chat.worktree, null);
+  assert.equal(chat.krad, process.execPath);
+  assert.equal(agentTerminals(appRequests).length, 0);
 });
 
-test("an app without chat/open (-32601) gets terminals, and chat/open is not asked again", async (t) => {
+test("when the helper reports an error, the agent opens in a terminal for that action", async (t) => {
   const dir = fixtureRoot();
   const { child, request, waitFor, appRequests } = startProgram([{ id: "g", name: "g", root: dir }], {
+    ...KRAD_IS_NODE,
     "window/input": "quick",
-    "chat/open": new AppError(-32601, "method not found: chat/open"),
     "terminal/open": 51,
+    chat: (message) => {
+      answerChat(message, { ok: false, error: "spawn refused" });
+      return 5;
+    },
   });
   t.after(() => {
     child.kill();
@@ -634,27 +656,35 @@ test("an app without chat/open (-32601) gets terminals, and chat/open is not ask
   await request("initialize", INIT);
   const target = { kind: "folder", path: dir };
   await request("command/execute", { command: "tasklist.generate", target });
-  await request("command/execute", { command: "tasklist.reconcile", target });
-  assert.equal(appRequests.filter((m) => m.method === "chat/open").length, 1);
-  const terminals = appRequests.filter((m) => m.method === "terminal/open");
-  assert.equal(terminals.length, 2);
-  assert.deepEqual(terminals.map((m) => m.params.title), ["improve", "improve"]);
+  const terminals = agentTerminals(appRequests);
+  assert.equal(terminals.length, 1);
+  assert.equal(terminals[0].params.title, "improve");
+  assert.equal(terminals[0].params.zone, "session");
   assert.match(JSON.stringify(terminals[0].params.command), /\/improve quick/);
-  assert.match(JSON.stringify(terminals[1].params.command), /\/improve reconcile/);
-  const log = await waitFor((m) => m.method === "window/log" && /no native chats/.test(m.params.message));
-  assert.equal(log.params.level, "info");
+  const log = await waitFor((m) => m.method === "window/log" && /spawn refused/.test(m.params.message));
+  assert.equal(log.params.level, "warn");
+  // The fallback is per action: the next one tries a chat again.
+  await request("command/execute", { command: "tasklist.reconcile", target });
+  assert.equal(appRequests.filter(isChatHelper).length, 2);
+  assert.equal(agentTerminals(appRequests).length, 2);
 });
 
-test("Run in worktree asks Krad for the worktree by name and records its path and branch", async (t) => {
+test("Run in worktree spawns the chat with the worktree name and records its terminal, path and branch", async (t) => {
   const dir = fixtureRoot();
   const git = (...args) => execFileSync("git", ["-C", dir, ...args], { stdio: "ignore" });
+  const ident = ["-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false"];
   git("init", "-q");
-  git("-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false", "add", ".");
-  git("-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false", "commit", "-q", "-m", "plans");
+  git(...ident, "add", ".");
+  git(...ident, "commit", "-q", "-m", "plans");
+  let chat = null;
   const { child, request, notify, waitFor, appRequests } = startProgram([{ id: "g", name: "g", root: dir }], {
-    "chat/open": { terminal: 9, session: 4 },
+    ...KRAD_IS_NODE,
+    chat: (message) => {
+      chat = answerChat(message, { ok: true, terminal: 42 });
+      return 5;
+    },
   });
-  const expected = join(`${dir}.worktrees`, "005-five");
+  const expected = join(dirname(dir), `${basename(dir)}.worktrees`, "005-five");
   t.after(() => {
     child.kill();
     rmSync(dir, { recursive: true, force: true });
@@ -665,18 +695,18 @@ test("Run in worktree asks Krad for the worktree by name and records its path an
   await request("view/render", ref);
   notify("view/event", { ...ref, event: { kind: "choose", node: "tasks", items: ["005"] } });
   notify("view/event", { ...ref, event: { kind: "click", action: "run-worktree" } });
-  await waitFor((m) => m.method === "window/toast" && /Started task 005/.test(m.params.message));
-  const chat = appRequests.find((m) => m.method === "chat/open");
-  assert.equal(chat.params.worktree, "005-five");
-  assert.equal(chat.params.group_root, dir);
-  assert.equal(chat.params.title, "task 005 · claude");
-  assert.match(chat.params.task, /Execute the implementation plan in plans\/005-five\.md/);
-  assert.equal(appRequests.filter((m) => m.method === "terminal/open").length, 0);
+  // git status and the chat round trip can be slow under a loaded parallel test run.
+  await waitFor((m) => m.method === "window/toast" && /Started task 005/.test(m.params.message), 30_000);
+  assert.equal(chat.worktree, "005-five");
+  assert.equal(chat.agent, "claude");
+  assert.match(chat.task, /Execute the implementation plan in plans\/005-five\.md/);
+  assert.equal(agentTerminals(appRequests).length, 0);
   // Krad makes the worktree, not the extension.
   assert.equal(existsSync(expected), false);
   const view = await request("view/render", ref);
   const info = findNode(view.result, "detail-run-info");
   const value = (label) => info.entries.find((i) => i.label === label)?.value;
+  assert.equal(value("Terminal"), "42");
   assert.equal(value("Where"), expected);
   assert.equal(value("Branch"), "005-five");
 });

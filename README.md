@@ -19,9 +19,12 @@ The extension activates in groups that contain `plans/README.md`. Open it with *
    that run tasks.
 
 Every agent the extension starts (Write plans, Reconcile, Edit with a prompt, Run, Run in a
-worktree, Auto-run) opens as a native Krad chat when the app supports `chat/open`. On an older Krad
-the first attempt fails, the extension logs it once and opens agent terminals running the harness
-CLI instead (with **Extra agent arguments**) for the rest of the session.
+worktree, Auto-run) opens as a native Krad chat. The extension opens a short-lived **Starting
+chat…** utilities terminal that runs `krad spawn --agent <agent> [--worktree <name>] <prompt>`
+(any Krad terminal may start a worker chat in its group) and follows the new chat by its terminal
+id. If that fails (krad not found, an error from `krad spawn`, no answer within 20 s), the error
+goes to the extension log and that agent opens in a terminal running the harness CLI instead (with
+**Extra agent arguments**).
 
 `dist/main.js` is committed, so nothing needs to be installed to run it.
 
@@ -75,7 +78,7 @@ CLI instead (with **Extra agent arguments**) for the rest of the session.
 | `extra-args` | Extra agent arguments | text | (empty) | Added before the prompt, split on spaces, e.g. `--model sonnet`. Only used by agent terminals (the fallback), not by chats. |
 | `max-parallel` | Parallel agents in an auto-run | number (1–8) | `1` | 1 runs tasks one after another in the group folder; more runs each task in its own git worktree. |
 | `stop-on-failure` | Stop the auto-run when a task is blocked or needs review | toggle | on | |
-| `krad-path` | Krad CLI | text | `krad` | The krad CLI used to follow agent states, by name on PATH or as a full path. |
+| `krad-path` | Krad CLI | text | `krad` | The krad CLI used to start chats (`krad spawn`) and follow agent states, by name on PATH or as a full path. |
 
 ## Agent tools
 

@@ -17,7 +17,7 @@ import type {
 } from "@krad-ade/extension";
 import { createExtension, patch } from "@krad-ade/extension";
 import { PlanCache } from "./cache.js";
-import { ChatsUnsupported, openChat } from "./chat.js";
+import { openChat } from "./chat.js";
 import { createTask, findPlansDir, loadPlanSet, runnableTasks, writeStatus } from "./plans.js";
 import type { AgentInfo, ExecutionStyle, KradCli } from "./runner.js";
 import {
@@ -514,9 +514,6 @@ async function plansDirty(root: string): Promise<boolean> {
   }
 }
 
-/** False once the app has said it has no chat/open: then every agent opens in a terminal. */
-let chatsAvailable = true;
-
 interface AgentLaunch {
   root: string;
   title: string;
@@ -525,28 +522,31 @@ interface AgentLaunch {
   zone: "session" | "utilities";
 }
 
+/** Set once "krad not found" was logged for chats, so it is logged once per krad path. */
+let chatKradMissingLogged = false;
+
 /**
- * Opens a native Krad chat for the prompt; null when the app cannot (an older Krad, remembered for
- * the rest of the process, or any error before the chat started) so the caller opens a terminal.
+ * Opens a native Krad chat for the prompt (krad spawn, run from a Krad terminal) and returns its
+ * bus terminal id; null when no chat started (krad not found, krad's error, a timeout), so the
+ * caller opens a terminal for this action.
  */
 async function tryChat(launch: AgentLaunch, worktree: string | null, context: Context): Promise<number | null> {
-  if (!chatsAvailable) return null;
-  try {
-    const chat = await openChat(context.app, {
-      task: launch.prompt,
-      agent: launch.harness,
-      title: launch.title,
-      group_root: launch.root,
-      worktree,
-    });
-    return chat.terminal;
-  } catch (error) {
-    if (error instanceof ChatsUnsupported) {
-      chatsAvailable = false;
-      context.app.log("info", `Krad has no native chats here (${error.message}); agents open in terminals`);
-    } else {
-      context.app.log("warn", `could not open a chat (${failure(error)}); opening a terminal instead`);
+  kradCli ??= await findKrad(current.kradPath);
+  if (kradCli === null) {
+    if (!chatKradMissingLogged) {
+      chatKradMissingLogged = true;
+      context.app.log("info", "krad CLI not found: agents open in terminals instead of chats");
     }
+    return null;
+  }
+  try {
+    return await openChat(
+      launch.root,
+      { agent: launch.harness, task: launch.prompt, title: launch.title, worktree },
+      { app: context.app, extensionFolder: context.init.extension_folder, krad: kradCli },
+    );
+  } catch (error) {
+    context.app.log("warn", `could not open a chat for ${launch.title} (${failure(error)}); opening a terminal instead`);
     return null;
   }
 }
@@ -1292,6 +1292,7 @@ createExtension({
     if (current.kradPath !== before) {
       kradCli = null;
       kradMissingWarned = false;
+      chatKradMissingLogged = false;
     }
     refreshAll(context);
   },
