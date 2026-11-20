@@ -820,10 +820,59 @@ ${folderStamp(dir)}`;
   }
 };
 
+// src/chat.ts
+import { existsSync as existsSync2, mkdtempSync, readFileSync as readFileSync3, rmSync, writeFileSync as writeFileSync2 } from "node:fs";
+import { tmpdir } from "node:os";
+import { join as join3 } from "node:path";
+var CHAT_TIMEOUT_MS = 2e4;
+var sleep = (ms) => new Promise((resolve4) => setTimeout(resolve4, ms));
+function readOutcome(file) {
+  if (!existsSync2(file)) return null;
+  try {
+    const raw = JSON.parse(readFileSync3(file, "utf8"));
+    if (raw.ok === true && typeof raw.terminal === "number") return { ok: true, terminal: raw.terminal };
+    return { ok: false, error: typeof raw.error === "string" ? raw.error : JSON.stringify(raw) };
+  } catch {
+    return null;
+  }
+}
+async function openChat(root, spec, deps) {
+  const dir = mkdtempSync(join3(tmpdir(), "tasklist-chat-"));
+  try {
+    const out = join3(dir, "result.json");
+    const request = {
+      krad: deps.krad.program,
+      kradArgs: deps.krad.prefixArgs,
+      agent: spec.agent,
+      worktree: spec.worktree ?? null,
+      task: spec.task,
+      out
+    };
+    const requestFile = join3(dir, "request.json");
+    writeFileSync2(requestFile, JSON.stringify(request));
+    await deps.app.openTerminal({
+      title: "Starting chat\u2026",
+      cwd: root,
+      zone: "utilities",
+      command: { program: process.execPath, args: [join3(deps.extensionFolder, "dist", "spawn-chat.js"), requestFile] }
+    });
+    const deadline = Date.now() + (deps.timeoutMs ?? CHAT_TIMEOUT_MS);
+    for (; ; ) {
+      const outcome = readOutcome(out);
+      if (outcome?.ok) return outcome.terminal;
+      if (outcome) throw new Error(outcome.error);
+      if (Date.now() >= deadline) throw new Error(`no answer from krad spawn within ${Math.round((deps.timeoutMs ?? CHAT_TIMEOUT_MS) / 1e3)} s`);
+      await sleep(deps.pollMs ?? 200);
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
 // src/runner.ts
 import { execFile, spawn } from "node:child_process";
-import { existsSync as existsSync2 } from "node:fs";
-import { join as join3, resolve as resolve2 } from "node:path";
+import { existsSync as existsSync3 } from "node:fs";
+import { join as join4, resolve as resolve2 } from "node:path";
 import { promisify } from "node:util";
 var run = promisify(execFile);
 var OUTPUT_LIMIT = 16 * 1024 * 1024;
@@ -831,25 +880,22 @@ function safeLine(text) {
   return text.replace(/[\r\n]+/g, " ").replace(/["%^&|<>]/g, "").replace(/\s+/g, " ").trim();
 }
 function taskPrompt(task, planPath, style) {
-  if (style === "improve") return safeLine(`/improve execute ${planPath}`);
-  return safeLine(
-    `Execute the implementation plan in ${planPath}. Read it fully first, follow its steps in order, run every verification command, and honour its STOP conditions. When finished, set the Status cell of row ${task.id} in plans/README.md to DONE, or to BLOCKED (one-line reason) if you stopped. Change no other row.`
-  );
+  if (style === "improve") return `/improve execute ${planPath}`;
+  return `Execute the implementation plan in ${planPath}. Read it fully first, follow its steps in order, run every verification command, and honour its STOP conditions. When finished, set the Status cell of row ${task.id} in plans/README.md to DONE, or to BLOCKED (one-line reason) if you stopped. Change no other row.`;
 }
 function editPlanPrompt(planPath, instruction) {
-  return safeLine(
-    `Edit the implementation plan in ${planPath}. The change: ${instruction} Read the plan fully first. Change only what the request needs and keep the plan's format: the '# Plan NNN: title' heading, the ## Status section and the numbered steps. Do not carry out the plan and do not change code. If the change touches the title, priority, effort or dependencies, update the plan's row in plans/README.md to match, leaving its Status cell and every other row alone.`
-  );
+  return `Edit the implementation plan in ${planPath}. The change: ${instruction.trim()} Read the plan fully first. Change only what the request needs and keep the plan's format: the '# Plan NNN: title' heading, the ## Status section and the numbered steps. Do not carry out the plan and do not change code. If the change touches the title, priority, effort or dependencies, update the plan's row in plans/README.md to match, leaving its Status cell and every other row alone.`;
 }
 function improvePrompt(args) {
-  return safeLine(`/improve ${args.trim()}`);
+  return `/improve ${args.trim()}`.trim();
 }
 function splitArgs(extraArgs) {
   return extraArgs.split(/\s+/).filter((part) => part.length > 0);
 }
 function harnessCommand(harness, prompt, extraArgs, platform = process.platform) {
   const extra = splitArgs(extraArgs);
-  const promptArgs = harness === "opencode" ? ["--prompt", prompt] : [prompt];
+  const line = safeLine(prompt);
+  const promptArgs = harness === "opencode" ? ["--prompt", line] : [line];
   const program = harness;
   const rest = [...extra, ...promptArgs];
   if (platform === "win32") return { program: "cmd.exe", args: ["/d", "/s", "/c", program, ...rest] };
@@ -865,10 +911,15 @@ function variantsCommand(harnesses, prompt, platform = process.platform) {
   args.push(prompt);
   return { program: "krad", args };
 }
+function worktreeName(task) {
+  return `${task.id}-${task.slug}`;
+}
+function worktreePath(root, name) {
+  return join4(`${root.replace(/[\\/]+$/, "")}.worktrees`, name);
+}
 function worktreeFor(root, task) {
-  const trimmed = root.replace(/[\\/]+$/, "");
-  const name = `${task.id}-${task.slug}`;
-  return { path: join3(`${trimmed}.worktrees`, name), branch: `tasklist/${name}` };
+  const name = worktreeName(task);
+  return { path: worktreePath(root, name), branch: `tasklist/${name}` };
 }
 async function isGitRepo(root, git = "git") {
   try {
@@ -899,7 +950,7 @@ async function branchExists(root, branch, git) {
 }
 async function createWorktree(root, task, git = "git") {
   const target = worktreeFor(root, task);
-  if (existsSync2(target.path)) {
+  if (existsSync3(target.path)) {
     const listing = await gitOutput(git, ["-C", root, "worktree", "list", "--porcelain"]);
     const known = listing.split(/\r?\n/).filter((line) => line.startsWith("worktree ")).map((line) => line.slice("worktree ".length));
     if (known.some((path) => samePath(path, target.path))) return target;
@@ -937,7 +988,7 @@ async function findKrad(setting) {
   if (setting.trim()) candidates.push(setting.trim());
   candidates.push("krad", "krad-ade-agents");
   if (process.platform === "win32" && process.env.LOCALAPPDATA) {
-    candidates.push(join3(process.env.LOCALAPPDATA, "Programs", "Krad ADE", "krad.exe"));
+    candidates.push(join4(process.env.LOCALAPPDATA, "Programs", "Krad ADE", "krad.exe"));
   }
   for (const program of [...new Set(candidates)]) {
     try {
@@ -1595,6 +1646,7 @@ function detailTop(state, task) {
         { label: "Where", value: run3.cwd },
         { label: "Branch", value: run3.branch ?? "\u2014" },
         { label: "State", value: run3.state },
+        { label: "Terminal", value: String(run3.terminal) },
         { label: "Started", value: run3.startedAt }
       ])
     );
@@ -1996,6 +2048,38 @@ async function plansDirty(root) {
     return false;
   }
 }
+var chatKradMissingLogged = false;
+async function tryChat(launch, worktree, context) {
+  kradCli ??= await findKrad(current.kradPath);
+  if (kradCli === null) {
+    if (!chatKradMissingLogged) {
+      chatKradMissingLogged = true;
+      context.app.log("info", "krad CLI not found: agents open in terminals instead of chats");
+    }
+    return null;
+  }
+  try {
+    return await openChat(
+      launch.root,
+      { agent: launch.harness, task: launch.prompt, title: launch.title, worktree },
+      { app: context.app, extensionFolder: context.init.extension_folder, krad: kradCli }
+    );
+  } catch (error) {
+    context.app.log("warn", `could not open a chat for ${launch.title} (${failure(error)}); opening a terminal instead`);
+    return null;
+  }
+}
+function openAgentTerminal(launch, cwd, context) {
+  return context.app.openTerminal({
+    title: launch.title,
+    cwd,
+    zone: launch.zone,
+    command: harnessCommand(launch.harness, launch.prompt, current.extraArgs)
+  });
+}
+async function startAgent(launch, context) {
+  return await tryChat(launch, null, context) ?? await openAgentTerminal(launch, launch.root, context);
+}
 async function runTask(root, task, mode, context) {
   const { app } = context;
   if (liveRun(root, task.id)) {
@@ -2016,21 +2100,34 @@ async function runTask(root, task, mode, context) {
       if (await plansDirty(root)) {
         app.toast("Uncommitted plan edits will not be in the worktree", "info");
       }
-      const created = await createWorktree(root, task);
-      cwd = created.path;
-      worktree = created.path;
-      branch = created.branch;
     }
     const planPath = planPathOf(root, task.file);
     writeStatusOf(root, task.id, "IN PROGRESS", null);
     statusWritten = true;
     const harness = current.harness;
-    const terminal = await app.openTerminal({
+    const launch = {
+      root,
       title: `task ${task.id} \xB7 ${harness}`,
-      cwd,
-      zone: "session",
-      command: harnessCommand(harness, taskPrompt(task, planPath, current.style), current.extraArgs)
-    });
+      prompt: taskPrompt(task, planPath, current.style),
+      harness,
+      zone: "session"
+    };
+    const name = mode === "worktree" ? worktreeName(task) : null;
+    let terminal = await tryChat(launch, name, context);
+    if (terminal !== null && name !== null) {
+      cwd = worktreePath(root, name);
+      worktree = cwd;
+      branch = name;
+    }
+    if (terminal === null) {
+      if (mode === "worktree") {
+        const created = await createWorktree(root, task);
+        cwd = created.path;
+        worktree = created.path;
+        branch = created.branch;
+      }
+      terminal = await openAgentTerminal(launch, cwd, context);
+    }
     runs.push({
       taskId: task.id,
       root,
@@ -2088,12 +2185,10 @@ async function runVariants(root, task, context) {
 }
 async function openImprove(root, args, context) {
   try {
-    await context.app.openTerminal({
-      title: "improve",
-      cwd: root,
-      zone: "session",
-      command: harnessCommand(current.harness, improvePrompt(args), current.extraArgs)
-    });
+    await startAgent(
+      { root, title: "improve", prompt: improvePrompt(args), harness: current.harness, zone: "session" },
+      context
+    );
   } catch (error) {
     context.app.toast(`Could not start /improve: ${failure(error)}`, "error");
   }
@@ -2454,12 +2549,16 @@ async function editWithPrompt(root, task, context) {
   });
   if (instruction === null || !instruction.trim()) return;
   try {
-    await app.openTerminal({
-      title: `edit ${task.id} \xB7 ${current.harness}`,
-      cwd: root,
-      zone: "session",
-      command: harnessCommand(current.harness, editPlanPrompt(planPath, instruction), current.extraArgs)
-    });
+    await startAgent(
+      {
+        root,
+        title: `edit ${task.id} \xB7 ${current.harness}`,
+        prompt: editPlanPrompt(planPath, instruction),
+        harness: current.harness,
+        zone: "session"
+      },
+      context
+    );
     watchPlans(root, context);
     app.toast(`Editing plan ${task.id} with ${current.harness}; the plan refreshes as it changes`, "info");
   } catch (error) {
@@ -2619,6 +2718,7 @@ createExtension({
     if (current.kradPath !== before) {
       kradCli = null;
       kradMissingWarned = false;
+      chatKradMissingLogged = false;
     }
     refreshAll(context);
   },

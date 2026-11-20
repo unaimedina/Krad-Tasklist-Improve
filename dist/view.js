@@ -546,6 +546,7 @@ function detailTop(state, task) {
         { label: "Where", value: run.cwd },
         { label: "Branch", value: run.branch ?? "\u2014" },
         { label: "State", value: run.state },
+        { label: "Terminal", value: String(run.terminal) },
         { label: "Started", value: run.startedAt }
       ])
     );

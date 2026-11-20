@@ -726,6 +726,7 @@ export function detailTop(state: TabState, task: Task): Node {
         { label: "Where", value: run.cwd },
         { label: "Branch", value: run.branch ?? "—" },
         { label: "State", value: run.state },
+        { label: "Terminal", value: String(run.terminal) },
         { label: "Started", value: run.startedAt },
       ]),
     );
