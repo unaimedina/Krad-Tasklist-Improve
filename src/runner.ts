@@ -23,33 +23,36 @@ export function safeLine(text: string): string {
     .trim();
 }
 
+// Prompts are plain text: a chat takes them as they are; harnessCommand makes them one safe line
+// for the terminal fallback.
+
 /** planPath is relative to the agent's working folder, with forward slashes, e.g. "plans/003-tab.md". */
 export function taskPrompt(task: Task, planPath: string, style: ExecutionStyle): string {
-  if (style === "improve") return safeLine(`/improve execute ${planPath}`);
-  return safeLine(
+  if (style === "improve") return `/improve execute ${planPath}`;
+  return (
     `Execute the implementation plan in ${planPath}. Read it fully first, follow its steps in order, ` +
       `run every verification command, and honour its STOP conditions. When finished, set the Status cell ` +
       `of row ${task.id} in plans/README.md to DONE, or to BLOCKED (one-line reason) if you stopped. ` +
-      `Change no other row.`,
+      `Change no other row.`
   );
 }
 
 /**
- * A one-line prompt that asks an agent to change one plan file as the user describes, without
+ * A prompt that asks an agent to change one plan file as the user describes, without
  * carrying the plan out. planPath is relative to the group folder, with forward slashes.
  */
 export function editPlanPrompt(planPath: string, instruction: string): string {
-  return safeLine(
-    `Edit the implementation plan in ${planPath}. The change: ${instruction} ` +
+  return (
+    `Edit the implementation plan in ${planPath}. The change: ${instruction.trim()} ` +
       `Read the plan fully first. Change only what the request needs and keep the plan's format: the ` +
       `'# Plan NNN: title' heading, the ## Status section and the numbered steps. Do not carry out the plan ` +
       `and do not change code. If the change touches the title, priority, effort or dependencies, update the ` +
-      `plan's row in plans/README.md to match, leaving its Status cell and every other row alone.`,
+      `plan's row in plans/README.md to match, leaving its Status cell and every other row alone.`
   );
 }
 
 export function improvePrompt(args: string): string {
-  return safeLine(`/improve ${args.trim()}`);
+  return `/improve ${args.trim()}`.trim();
 }
 
 export interface TerminalSpec {
@@ -61,7 +64,7 @@ function splitArgs(extraArgs: string): string[] {
   return extraArgs.split(/\s+/).filter((part) => part.length > 0);
 }
 
-/** Harness command for a prompt; extraArgs is the user's setting split on whitespace. platform defaults to process.platform. */
+/** Harness command for a prompt (made one safeLine for `cmd /c`); extraArgs is the user's setting split on whitespace. platform defaults to process.platform. */
 export function harnessCommand(
   harness: Harness,
   prompt: string,
@@ -69,7 +72,8 @@ export function harnessCommand(
   platform: NodeJS.Platform = process.platform,
 ): TerminalSpec {
   const extra = splitArgs(extraArgs);
-  const promptArgs = harness === "opencode" ? ["--prompt", prompt] : [prompt];
+  const line = safeLine(prompt);
+  const promptArgs = harness === "opencode" ? ["--prompt", line] : [line];
   const program = harness;
   const rest = [...extra, ...promptArgs];
   if (platform === "win32") return { program: "cmd.exe", args: ["/d", "/s", "/c", program, ...rest] };
@@ -97,10 +101,19 @@ export function variantsCommand(
 // Worktrees
 // ---------------------------------------------------------------------------
 
+/** The worktree name of a task: <id>-<slug>. */
+export function worktreeName(task: Task): string {
+  return `${task.id}-${task.slug}`;
+}
+
+/** <root>.worktrees/<name>: where both Krad's chat/open and createWorktree put a worktree. */
+export function worktreePath(root: string, name: string): string {
+  return join(`${root.replace(/[\\/]+$/, "")}.worktrees`, name);
+}
+
 export function worktreeFor(root: string, task: Task): { path: string; branch: string } {
-  const trimmed = root.replace(/[\\/]+$/, "");
-  const name = `${task.id}-${task.slug}`;
-  return { path: join(`${trimmed}.worktrees`, name), branch: `tasklist/${name}` };
+  const name = worktreeName(task);
+  return { path: worktreePath(root, name), branch: `tasklist/${name}` };
 }
 
 export async function isGitRepo(root: string, git = "git"): Promise<boolean> {

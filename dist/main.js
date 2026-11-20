@@ -90,6 +90,7 @@ function contentLength(header2) {
 
 // node_modules/@krad-ade/extension/dist/rpc.js
 var METHOD_NOT_FOUND = -32601;
+var INVALID_PARAMS = -32602;
 var REQUEST_FAILED = -32803;
 var JSONRPC = "2.0";
 var RpcError = class extends Error {
@@ -820,6 +821,27 @@ ${folderStamp(dir)}`;
   }
 };
 
+// src/chat.ts
+var ChatsUnsupported = class extends Error {
+};
+async function openChat(app, params) {
+  const request = app.request;
+  let result;
+  try {
+    result = await request.call(app, "chat/open", params);
+  } catch (error) {
+    if (error instanceof RpcError && (error.code === METHOD_NOT_FOUND || error.code === INVALID_PARAMS)) {
+      throw new ChatsUnsupported(`chat/open is not supported (${error.code}: ${error.message})`);
+    }
+    throw error;
+  }
+  const r = result ?? {};
+  if (typeof r.terminal !== "number") {
+    throw new ChatsUnsupported(`chat/open answered without a terminal id: ${JSON.stringify(result)}`);
+  }
+  return { terminal: r.terminal, session: typeof r.session === "number" ? r.session : -1 };
+}
+
 // src/runner.ts
 import { execFile, spawn } from "node:child_process";
 import { existsSync as existsSync2 } from "node:fs";
@@ -831,25 +853,22 @@ function safeLine(text) {
   return text.replace(/[\r\n]+/g, " ").replace(/["%^&|<>]/g, "").replace(/\s+/g, " ").trim();
 }
 function taskPrompt(task, planPath, style) {
-  if (style === "improve") return safeLine(`/improve execute ${planPath}`);
-  return safeLine(
-    `Execute the implementation plan in ${planPath}. Read it fully first, follow its steps in order, run every verification command, and honour its STOP conditions. When finished, set the Status cell of row ${task.id} in plans/README.md to DONE, or to BLOCKED (one-line reason) if you stopped. Change no other row.`
-  );
+  if (style === "improve") return `/improve execute ${planPath}`;
+  return `Execute the implementation plan in ${planPath}. Read it fully first, follow its steps in order, run every verification command, and honour its STOP conditions. When finished, set the Status cell of row ${task.id} in plans/README.md to DONE, or to BLOCKED (one-line reason) if you stopped. Change no other row.`;
 }
 function editPlanPrompt(planPath, instruction) {
-  return safeLine(
-    `Edit the implementation plan in ${planPath}. The change: ${instruction} Read the plan fully first. Change only what the request needs and keep the plan's format: the '# Plan NNN: title' heading, the ## Status section and the numbered steps. Do not carry out the plan and do not change code. If the change touches the title, priority, effort or dependencies, update the plan's row in plans/README.md to match, leaving its Status cell and every other row alone.`
-  );
+  return `Edit the implementation plan in ${planPath}. The change: ${instruction.trim()} Read the plan fully first. Change only what the request needs and keep the plan's format: the '# Plan NNN: title' heading, the ## Status section and the numbered steps. Do not carry out the plan and do not change code. If the change touches the title, priority, effort or dependencies, update the plan's row in plans/README.md to match, leaving its Status cell and every other row alone.`;
 }
 function improvePrompt(args) {
-  return safeLine(`/improve ${args.trim()}`);
+  return `/improve ${args.trim()}`.trim();
 }
 function splitArgs(extraArgs) {
   return extraArgs.split(/\s+/).filter((part) => part.length > 0);
 }
 function harnessCommand(harness, prompt, extraArgs, platform = process.platform) {
   const extra = splitArgs(extraArgs);
-  const promptArgs = harness === "opencode" ? ["--prompt", prompt] : [prompt];
+  const line = safeLine(prompt);
+  const promptArgs = harness === "opencode" ? ["--prompt", line] : [line];
   const program = harness;
   const rest = [...extra, ...promptArgs];
   if (platform === "win32") return { program: "cmd.exe", args: ["/d", "/s", "/c", program, ...rest] };
@@ -865,10 +884,15 @@ function variantsCommand(harnesses, prompt, platform = process.platform) {
   args.push(prompt);
   return { program: "krad", args };
 }
+function worktreeName(task) {
+  return `${task.id}-${task.slug}`;
+}
+function worktreePath(root, name) {
+  return join3(`${root.replace(/[\\/]+$/, "")}.worktrees`, name);
+}
 function worktreeFor(root, task) {
-  const trimmed = root.replace(/[\\/]+$/, "");
-  const name = `${task.id}-${task.slug}`;
-  return { path: join3(`${trimmed}.worktrees`, name), branch: `tasklist/${name}` };
+  const name = worktreeName(task);
+  return { path: worktreePath(root, name), branch: `tasklist/${name}` };
 }
 async function isGitRepo(root, git = "git") {
   try {
@@ -1996,6 +2020,39 @@ async function plansDirty(root) {
     return false;
   }
 }
+var chatsAvailable = true;
+async function tryChat(launch, worktree, context) {
+  if (!chatsAvailable) return null;
+  try {
+    const chat = await openChat(context.app, {
+      task: launch.prompt,
+      agent: launch.harness,
+      title: launch.title,
+      group_root: launch.root,
+      worktree
+    });
+    return chat.terminal;
+  } catch (error) {
+    if (error instanceof ChatsUnsupported) {
+      chatsAvailable = false;
+      context.app.log("info", `Krad has no native chats here (${error.message}); agents open in terminals`);
+    } else {
+      context.app.log("warn", `could not open a chat (${failure(error)}); opening a terminal instead`);
+    }
+    return null;
+  }
+}
+function openAgentTerminal(launch, cwd, context) {
+  return context.app.openTerminal({
+    title: launch.title,
+    cwd,
+    zone: launch.zone,
+    command: harnessCommand(launch.harness, launch.prompt, current.extraArgs)
+  });
+}
+async function startAgent(launch, context) {
+  return await tryChat(launch, null, context) ?? await openAgentTerminal(launch, launch.root, context);
+}
 async function runTask(root, task, mode, context) {
   const { app } = context;
   if (liveRun(root, task.id)) {
@@ -2016,21 +2073,34 @@ async function runTask(root, task, mode, context) {
       if (await plansDirty(root)) {
         app.toast("Uncommitted plan edits will not be in the worktree", "info");
       }
-      const created = await createWorktree(root, task);
-      cwd = created.path;
-      worktree = created.path;
-      branch = created.branch;
     }
     const planPath = planPathOf(root, task.file);
     writeStatusOf(root, task.id, "IN PROGRESS", null);
     statusWritten = true;
     const harness = current.harness;
-    const terminal = await app.openTerminal({
+    const launch = {
+      root,
       title: `task ${task.id} \xB7 ${harness}`,
-      cwd,
-      zone: "session",
-      command: harnessCommand(harness, taskPrompt(task, planPath, current.style), current.extraArgs)
-    });
+      prompt: taskPrompt(task, planPath, current.style),
+      harness,
+      zone: "session"
+    };
+    const name = mode === "worktree" ? worktreeName(task) : null;
+    let terminal = await tryChat(launch, name, context);
+    if (terminal !== null && name !== null) {
+      cwd = worktreePath(root, name);
+      worktree = cwd;
+      branch = name;
+    }
+    if (terminal === null) {
+      if (mode === "worktree") {
+        const created = await createWorktree(root, task);
+        cwd = created.path;
+        worktree = created.path;
+        branch = created.branch;
+      }
+      terminal = await openAgentTerminal(launch, cwd, context);
+    }
     runs.push({
       taskId: task.id,
       root,
@@ -2088,12 +2158,10 @@ async function runVariants(root, task, context) {
 }
 async function openImprove(root, args, context) {
   try {
-    await context.app.openTerminal({
-      title: "improve",
-      cwd: root,
-      zone: "session",
-      command: harnessCommand(current.harness, improvePrompt(args), current.extraArgs)
-    });
+    await startAgent(
+      { root, title: "improve", prompt: improvePrompt(args), harness: current.harness, zone: "session" },
+      context
+    );
   } catch (error) {
     context.app.toast(`Could not start /improve: ${failure(error)}`, "error");
   }
@@ -2454,12 +2522,16 @@ async function editWithPrompt(root, task, context) {
   });
   if (instruction === null || !instruction.trim()) return;
   try {
-    await app.openTerminal({
-      title: `edit ${task.id} \xB7 ${current.harness}`,
-      cwd: root,
-      zone: "session",
-      command: harnessCommand(current.harness, editPlanPrompt(planPath, instruction), current.extraArgs)
-    });
+    await startAgent(
+      {
+        root,
+        title: `edit ${task.id} \xB7 ${current.harness}`,
+        prompt: editPlanPrompt(planPath, instruction),
+        harness: current.harness,
+        zone: "session"
+      },
+      context
+    );
     watchPlans(root, context);
     app.toast(`Editing plan ${task.id} with ${current.harness}; the plan refreshes as it changes`, "info");
   } catch (error) {

@@ -15,8 +15,13 @@ The extension activates in groups that contain `plans/README.md`. Open it with *
 ## Install
 
 1. In Krad ADE open **Settings → Extensions → Add folder** and pick this folder.
-2. Trust the extension: it declares the `terminals` permission, which it uses to open the agent
-   terminals that run tasks.
+2. Trust the extension: it declares the `terminals` permission, which it uses to open the agents
+   that run tasks.
+
+Every agent the extension starts (Write plans, Reconcile, Edit with a prompt, Run, Run in a
+worktree, Auto-run) opens as a native Krad chat when the app supports `chat/open`. On an older Krad
+the first attempt fails, the extension logs it once and opens agent terminals running the harness
+CLI instead (with **Extra agent arguments**) for the rest of the session.
 
 `dist/main.js` is committed, so nothing needs to be installed to run it.
 
@@ -45,12 +50,13 @@ The extension activates in groups that contain `plans/README.md`. Open it with *
   file is saved, and for an hour after an agent was asked to edit a plan, whenever `plans/` changes.
 - **Narrow windows**: the header and the action rows wrap onto more lines. The layout button in the
   header stacks the panes (tasks on top, the plan under them) or puts them side by side again.
-- **Run one**: **Run** (or **Run next**) opens an agent terminal in the group folder with a prompt
+- **Run one**: **Run** (or **Run next**) opens an agent chat in the group folder with a prompt
   that points at the plan, and sets the row to IN PROGRESS. The agent sets the row to DONE or
   BLOCKED when it finishes; if it stops without doing so the task needs review and stays
   IN PROGRESS.
-- **Run in a worktree**: the same in `<group>.worktrees/<id>-<slug>` on branch
-  `tasklist/<id>-<slug>`; the outcome is mirrored into the group's index. Merging the branch is up to
+- **Run in a worktree**: the same in `<group>.worktrees/<id>-<slug>`, a worktree Krad creates for
+  the chat on branch `<id>-<slug>` (with the terminal fallback the extension creates it, on branch
+  `tasklist/<id>-<slug>`); the outcome is mirrored into the group's index. Merging the branch is up to
   you (Krad's Changes view). Uncommitted plan edits are not in the worktree.
 - **Compare agents**: pick 2–4 agents; they run the task with `krad variants run` and you compare
   them in Krad's Variants view.
@@ -66,7 +72,7 @@ The extension activates in groups that contain `plans/README.md`. Open it with *
 |-----|-------|------|---------|---------|
 | `harness` | Agent | choice (`claude`, `codex`, `opencode`) | `claude` | The coding agent that runs a task. |
 | `execution-style` | How an agent runs a plan | choice (`direct`, `improve`) | `direct` | Direct: the agent follows the plan itself. Improve: the agent runs `/improve execute <plan>`, which dispatches an executor and reviews its diff. |
-| `extra-args` | Extra agent arguments | text | (empty) | Added before the prompt, split on spaces, e.g. `--model sonnet`. |
+| `extra-args` | Extra agent arguments | text | (empty) | Added before the prompt, split on spaces, e.g. `--model sonnet`. Only used by agent terminals (the fallback), not by chats. |
 | `max-parallel` | Parallel agents in an auto-run | number (1–8) | `1` | 1 runs tasks one after another in the group folder; more runs each task in its own git worktree. |
 | `stop-on-failure` | Stop the auto-run when a task is blocked or needs review | toggle | on | |
 | `krad-path` | Krad CLI | text | `krad` | The krad CLI used to follow agent states, by name on PATH or as a full path. |

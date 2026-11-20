@@ -17,6 +17,7 @@ import type {
 } from "@krad-ade/extension";
 import { createExtension, patch } from "@krad-ade/extension";
 import { PlanCache } from "./cache.js";
+import { ChatsUnsupported, openChat } from "./chat.js";
 import { createTask, findPlansDir, loadPlanSet, runnableTasks, writeStatus } from "./plans.js";
 import type { AgentInfo, ExecutionStyle, KradCli } from "./runner.js";
 import {
@@ -29,6 +30,8 @@ import {
   isGitRepo,
   taskPrompt,
   variantsCommand,
+  worktreeName,
+  worktreePath,
 } from "./runner.js";
 import { hasStopped, isLive, nextLaunches, sessionOver, verdictFor } from "./scheduler.js";
 import type { Harness, PlanSet, RunMode, RunRecord, Task, TaskStatus } from "./types.js";
@@ -511,7 +514,59 @@ async function plansDirty(root: string): Promise<boolean> {
   }
 }
 
-/** Starts one agent on a task. Returns true when a terminal was opened. */
+/** False once the app has said it has no chat/open: then every agent opens in a terminal. */
+let chatsAvailable = true;
+
+interface AgentLaunch {
+  root: string;
+  title: string;
+  prompt: string;
+  harness: Harness;
+  zone: "session" | "utilities";
+}
+
+/**
+ * Opens a native Krad chat for the prompt; null when the app cannot (an older Krad, remembered for
+ * the rest of the process, or any error before the chat started) so the caller opens a terminal.
+ */
+async function tryChat(launch: AgentLaunch, worktree: string | null, context: Context): Promise<number | null> {
+  if (!chatsAvailable) return null;
+  try {
+    const chat = await openChat(context.app, {
+      task: launch.prompt,
+      agent: launch.harness,
+      title: launch.title,
+      group_root: launch.root,
+      worktree,
+    });
+    return chat.terminal;
+  } catch (error) {
+    if (error instanceof ChatsUnsupported) {
+      chatsAvailable = false;
+      context.app.log("info", `Krad has no native chats here (${error.message}); agents open in terminals`);
+    } else {
+      context.app.log("warn", `could not open a chat (${failure(error)}); opening a terminal instead`);
+    }
+    return null;
+  }
+}
+
+/** The terminal fallback: the harness CLI with the prompt as one cmd-safe line. */
+function openAgentTerminal(launch: AgentLaunch, cwd: string, context: Context): Promise<number> {
+  return context.app.openTerminal({
+    title: launch.title,
+    cwd,
+    zone: launch.zone,
+    command: harnessCommand(launch.harness, launch.prompt, current.extraArgs),
+  });
+}
+
+/** Starts an agent in the group folder: a chat when the app has them, else a terminal. Returns the terminal id. */
+async function startAgent(launch: AgentLaunch, context: Context): Promise<number> {
+  return (await tryChat(launch, null, context)) ?? (await openAgentTerminal(launch, launch.root, context));
+}
+
+/** Starts one agent on a task. Returns true when a chat or terminal was opened. */
 async function runTask(root: string, task: Task, mode: RunMode, context: Context): Promise<boolean> {
   const { app } = context;
   if (liveRun(root, task.id)) {
@@ -532,21 +587,35 @@ async function runTask(root: string, task: Task, mode: RunMode, context: Context
       if (await plansDirty(root)) {
         app.toast("Uncommitted plan edits will not be in the worktree", "info");
       }
-      const created = await createWorktree(root, task);
-      cwd = created.path;
-      worktree = created.path;
-      branch = created.branch;
     }
     const planPath = planPathOf(root, task.file);
     writeStatusOf(root, task.id, "IN PROGRESS", null);
     statusWritten = true;
     const harness = current.harness;
-    const terminal = await app.openTerminal({
+    const launch: AgentLaunch = {
+      root,
       title: `task ${task.id} · ${harness}`,
-      cwd,
+      prompt: taskPrompt(task, planPath, current.style),
+      harness,
       zone: "session",
-      command: harnessCommand(harness, taskPrompt(task, planPath, current.style), current.extraArgs),
-    });
+    };
+    const name = mode === "worktree" ? worktreeName(task) : null;
+    let terminal = await tryChat(launch, name, context);
+    if (terminal !== null && name !== null) {
+      // Krad created the worktree <root>.worktrees/<name> on branch <name>.
+      cwd = worktreePath(root, name);
+      worktree = cwd;
+      branch = name;
+    }
+    if (terminal === null) {
+      if (mode === "worktree") {
+        const created = await createWorktree(root, task);
+        cwd = created.path;
+        worktree = created.path;
+        branch = created.branch;
+      }
+      terminal = await openAgentTerminal(launch, cwd, context);
+    }
     runs.push({
       taskId: task.id,
       root,
@@ -606,12 +675,10 @@ async function runVariants(root: string, task: Task, context: Context): Promise<
 
 async function openImprove(root: string, args: string, context: Context): Promise<void> {
   try {
-    await context.app.openTerminal({
-      title: "improve",
-      cwd: root,
-      zone: "session",
-      command: harnessCommand(current.harness, improvePrompt(args), current.extraArgs),
-    });
+    await startAgent(
+      { root, title: "improve", prompt: improvePrompt(args), harness: current.harness, zone: "session" },
+      context,
+    );
   } catch (error) {
     context.app.toast(`Could not start /improve: ${failure(error)}`, "error");
   }
@@ -1013,12 +1080,16 @@ async function editWithPrompt(root: string, task: Task, context: Context): Promi
   });
   if (instruction === null || !instruction.trim()) return;
   try {
-    await app.openTerminal({
-      title: `edit ${task.id} · ${current.harness}`,
-      cwd: root,
-      zone: "session",
-      command: harnessCommand(current.harness, editPlanPrompt(planPath, instruction), current.extraArgs),
-    });
+    await startAgent(
+      {
+        root,
+        title: `edit ${task.id} · ${current.harness}`,
+        prompt: editPlanPrompt(planPath, instruction),
+        harness: current.harness,
+        zone: "session",
+      },
+      context,
+    );
     watchPlans(root, context);
     app.toast(`Editing plan ${task.id} with ${current.harness}; the plan refreshes as it changes`, "info");
   } catch (error) {

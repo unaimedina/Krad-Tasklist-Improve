@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
-import { cpSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { execFileSync, spawn } from "node:child_process";
+import { cpSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -16,6 +16,14 @@ const INIT = {
   extension_folder: root,
   features: ["views", "commands", "tools"],
 };
+
+/** An answer the fake app sends as a JSON-RPC error. */
+class AppError {
+  constructor(code, message) {
+    this.code = code;
+    this.message = message;
+  }
+}
 
 /** Spawn dist/main.js and talk framed JSON-RPC to it. */
 function startProgram(groups = [], answers = {}) {
@@ -34,7 +42,11 @@ function startProgram(groups = [], answers = {}) {
       if (message.method && message.id !== undefined) {
         // A request from the program to the app.
         appRequests.push(message);
-        if (message.method in answers) send({ id: message.id, result: answers[message.method] });
+        const answer = answers[message.method];
+        if (answer instanceof AppError) send({ id: message.id, error: { code: answer.code, message: answer.message } });
+        else if (message.method in answers) send({ id: message.id, result: answer });
+        // An app without native chats, like Krad before chat/open.
+        else if (message.method === "chat/open") send({ id: message.id, error: { code: -32601, message: "chat/open" } });
         else if (message.method === "settings/get") send({ id: message.id, result: {} });
         else if (message.method === "workspace/context") send({ id: message.id, result: { groups } });
         else send({ id: message.id, result: {} });
@@ -578,4 +590,93 @@ test("rows() serves the list from memory: it works with the plans folder gone", 
   rmSync(join(dir, "plans"), { recursive: true, force: true });
   const rows = await request("view/rows", { ...ref, node: "tasks", start: 1, end: 3 });
   assert.deepEqual(rows.result?.rows?.map((r) => r.node.key), ["002", "003"], JSON.stringify(rows).slice(0, 300));
+});
+
+// ---------------------------------------------------------------------------
+// Native chats (chat/open) and the terminal fallback
+// ---------------------------------------------------------------------------
+
+test("Write plans with /improve opens a native chat with the /improve prompt, no terminal", async (t) => {
+  const dir = fixtureRoot();
+  const { child, request, appRequests } = startProgram([{ id: "g", name: "g", root: dir }], {
+    "window/input": 'plan a "parser" & more',
+    "chat/open": { terminal: 7, session: 3 },
+  });
+  t.after(() => {
+    child.kill();
+    rmSync(dir, { recursive: true, force: true });
+  });
+  await request("initialize", INIT);
+  const reply = await request("command/execute", { command: "tasklist.generate", target: { kind: "folder", path: dir } });
+  assert.equal(reply.error, undefined, JSON.stringify(reply));
+  const chat = appRequests.find((m) => m.method === "chat/open");
+  assert.ok(chat, "chat/open was requested");
+  // A chat takes the prompt as it is: no cmd.exe quoting.
+  assert.equal(chat.params.task, '/improve plan a "parser" & more');
+  assert.equal(chat.params.agent, "claude");
+  assert.equal(chat.params.title, "improve");
+  assert.equal(chat.params.group_root, dir);
+  assert.equal(chat.params.worktree, null);
+  assert.equal(appRequests.filter((m) => m.method === "terminal/open").length, 0);
+});
+
+test("an app without chat/open (-32601) gets terminals, and chat/open is not asked again", async (t) => {
+  const dir = fixtureRoot();
+  const { child, request, waitFor, appRequests } = startProgram([{ id: "g", name: "g", root: dir }], {
+    "window/input": "quick",
+    "chat/open": new AppError(-32601, "method not found: chat/open"),
+    "terminal/open": 51,
+  });
+  t.after(() => {
+    child.kill();
+    rmSync(dir, { recursive: true, force: true });
+  });
+  await request("initialize", INIT);
+  const target = { kind: "folder", path: dir };
+  await request("command/execute", { command: "tasklist.generate", target });
+  await request("command/execute", { command: "tasklist.reconcile", target });
+  assert.equal(appRequests.filter((m) => m.method === "chat/open").length, 1);
+  const terminals = appRequests.filter((m) => m.method === "terminal/open");
+  assert.equal(terminals.length, 2);
+  assert.deepEqual(terminals.map((m) => m.params.title), ["improve", "improve"]);
+  assert.match(JSON.stringify(terminals[0].params.command), /\/improve quick/);
+  assert.match(JSON.stringify(terminals[1].params.command), /\/improve reconcile/);
+  const log = await waitFor((m) => m.method === "window/log" && /no native chats/.test(m.params.message));
+  assert.equal(log.params.level, "info");
+});
+
+test("Run in worktree asks Krad for the worktree by name and records its path and branch", async (t) => {
+  const dir = fixtureRoot();
+  const git = (...args) => execFileSync("git", ["-C", dir, ...args], { stdio: "ignore" });
+  git("init", "-q");
+  git("-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false", "add", ".");
+  git("-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false", "commit", "-q", "-m", "plans");
+  const { child, request, notify, waitFor, appRequests } = startProgram([{ id: "g", name: "g", root: dir }], {
+    "chat/open": { terminal: 9, session: 4 },
+  });
+  const expected = join(`${dir}.worktrees`, "005-five");
+  t.after(() => {
+    child.kill();
+    rmSync(dir, { recursive: true, force: true });
+    rmSync(`${dir}.worktrees`, { recursive: true, force: true });
+  });
+  const ref = { view: "tasklist", instance: dir };
+  await request("initialize", INIT);
+  await request("view/render", ref);
+  notify("view/event", { ...ref, event: { kind: "choose", node: "tasks", items: ["005"] } });
+  notify("view/event", { ...ref, event: { kind: "click", action: "run-worktree" } });
+  await waitFor((m) => m.method === "window/toast" && /Started task 005/.test(m.params.message));
+  const chat = appRequests.find((m) => m.method === "chat/open");
+  assert.equal(chat.params.worktree, "005-five");
+  assert.equal(chat.params.group_root, dir);
+  assert.equal(chat.params.title, "task 005 · claude");
+  assert.match(chat.params.task, /Execute the implementation plan in plans\/005-five\.md/);
+  assert.equal(appRequests.filter((m) => m.method === "terminal/open").length, 0);
+  // Krad makes the worktree, not the extension.
+  assert.equal(existsSync(expected), false);
+  const view = await request("view/render", ref);
+  const info = findNode(view.result, "detail-run-info");
+  const value = (label) => info.entries.find((i) => i.label === label)?.value;
+  assert.equal(value("Where"), expected);
+  assert.equal(value("Branch"), "005-five");
 });

@@ -187,10 +187,14 @@ test("AgentWatcher reports working then done", async (t) => {
   ]);
 });
 
-test("editPlanPrompt asks for one change to one plan file, on one safe line", () => {
-  const prompt = editPlanPrompt("plans/005-wire.md", 'Split step 3 in two\nand add a "test" & more');
-  assert.ok(!/[\r\n"&|<>%^]/.test(prompt), prompt);
-  assert.match(prompt, /^Edit the implementation plan in plans\/005-wire\.md\. The change: Split step 3 in two and add a test more /);
+test("editPlanPrompt keeps the user's words; the terminal command makes it one safe line", () => {
+  const instruction = 'Split step 3 in two\nand add a "test" & more';
+  const prompt = editPlanPrompt("plans/005-wire.md", instruction);
+  // A chat gets the words as they are.
+  assert.ok(prompt.includes(instruction), prompt);
+  const [line] = harnessCommand("claude", prompt, "", "linux").args;
+  assert.ok(!/[\r\n"&|<>%^]/.test(line), line);
+  assert.match(line, /^Edit the implementation plan in plans\/005-wire\.md\. The change: Split step 3 in two and add a test more /);
   assert.match(prompt, /'# Plan NNN: title' heading/);
   assert.match(prompt, /Do not carry out the plan and do not change code\./);
   assert.match(prompt, /leaving its Status cell and every other row alone\.$/);

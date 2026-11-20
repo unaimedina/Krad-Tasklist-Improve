@@ -9,25 +9,22 @@ function safeLine(text) {
   return text.replace(/[\r\n]+/g, " ").replace(/["%^&|<>]/g, "").replace(/\s+/g, " ").trim();
 }
 function taskPrompt(task, planPath, style) {
-  if (style === "improve") return safeLine(`/improve execute ${planPath}`);
-  return safeLine(
-    `Execute the implementation plan in ${planPath}. Read it fully first, follow its steps in order, run every verification command, and honour its STOP conditions. When finished, set the Status cell of row ${task.id} in plans/README.md to DONE, or to BLOCKED (one-line reason) if you stopped. Change no other row.`
-  );
+  if (style === "improve") return `/improve execute ${planPath}`;
+  return `Execute the implementation plan in ${planPath}. Read it fully first, follow its steps in order, run every verification command, and honour its STOP conditions. When finished, set the Status cell of row ${task.id} in plans/README.md to DONE, or to BLOCKED (one-line reason) if you stopped. Change no other row.`;
 }
 function editPlanPrompt(planPath, instruction) {
-  return safeLine(
-    `Edit the implementation plan in ${planPath}. The change: ${instruction} Read the plan fully first. Change only what the request needs and keep the plan's format: the '# Plan NNN: title' heading, the ## Status section and the numbered steps. Do not carry out the plan and do not change code. If the change touches the title, priority, effort or dependencies, update the plan's row in plans/README.md to match, leaving its Status cell and every other row alone.`
-  );
+  return `Edit the implementation plan in ${planPath}. The change: ${instruction.trim()} Read the plan fully first. Change only what the request needs and keep the plan's format: the '# Plan NNN: title' heading, the ## Status section and the numbered steps. Do not carry out the plan and do not change code. If the change touches the title, priority, effort or dependencies, update the plan's row in plans/README.md to match, leaving its Status cell and every other row alone.`;
 }
 function improvePrompt(args) {
-  return safeLine(`/improve ${args.trim()}`);
+  return `/improve ${args.trim()}`.trim();
 }
 function splitArgs(extraArgs) {
   return extraArgs.split(/\s+/).filter((part) => part.length > 0);
 }
 function harnessCommand(harness, prompt, extraArgs, platform = process.platform) {
   const extra = splitArgs(extraArgs);
-  const promptArgs = harness === "opencode" ? ["--prompt", prompt] : [prompt];
+  const line = safeLine(prompt);
+  const promptArgs = harness === "opencode" ? ["--prompt", line] : [line];
   const program = harness;
   const rest = [...extra, ...promptArgs];
   if (platform === "win32") return { program: "cmd.exe", args: ["/d", "/s", "/c", program, ...rest] };
@@ -43,10 +40,15 @@ function variantsCommand(harnesses, prompt, platform = process.platform) {
   args.push(prompt);
   return { program: "krad", args };
 }
+function worktreeName(task) {
+  return `${task.id}-${task.slug}`;
+}
+function worktreePath(root, name) {
+  return join(`${root.replace(/[\\/]+$/, "")}.worktrees`, name);
+}
 function worktreeFor(root, task) {
-  const trimmed = root.replace(/[\\/]+$/, "");
-  const name = `${task.id}-${task.slug}`;
-  return { path: join(`${trimmed}.worktrees`, name), branch: `tasklist/${name}` };
+  const name = worktreeName(task);
+  return { path: worktreePath(root, name), branch: `tasklist/${name}` };
 }
 async function isGitRepo(root, git = "git") {
   try {
@@ -258,5 +260,7 @@ export {
   safeLine,
   taskPrompt,
   variantsCommand,
-  worktreeFor
+  worktreeFor,
+  worktreeName,
+  worktreePath
 };
